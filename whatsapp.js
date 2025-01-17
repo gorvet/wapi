@@ -22,6 +22,10 @@ import { downloadImage } from './utils/download.js'
 import axios from 'axios'
 import NodeCache from 'node-cache'
 
+import https from 'https';
+import { readFromDatabase, writeToDatabase,deleteFromDatabase} from './database.js';
+
+
 const msgRetryCounterCache = new NodeCache()
 
 const sessions = new Map()
@@ -71,7 +75,15 @@ const webhook = async (instance, type, data) => {
                 instance,
                 type,
                 data,
-            })
+            }, {
+                 headers: {
+                    'X-Webhook-Wapi': process.env.AUTHENTICATION_GLOBAL_AUTH_TOKEN
+                     // Agregar cabecera personalizada
+                },
+    httpsAgent: new https.Agent({  
+        rejectUnauthorized: false
+    })
+})
             .then((success) => {
                 return success
             })
