@@ -46,7 +46,7 @@ const send = async (req, res) => {
             }
         }
 
-        await sendMessage(session, receiver, message, 0)
+        await sendMessage(session, receiver, message, {}, 0)
 
         response(res, 200, true, 'The message has been successfully sent.')
     } catch {
@@ -80,7 +80,7 @@ const sendBulk = async (req, res) => {
                 continue
             }
 
-            await sendMessage(session, receiver, message, delay)
+            await sendMessage(session, receiver, message, {}, delay)
         } catch (err) {
             errors.push({ key, message: err.message })
         }
@@ -125,7 +125,8 @@ const forward = async (req, res) => {
     try {
         const messages = await session.store.loadMessages(remoteJid, 25, null)
 
-        const key = messages.filter((element) => {
+        
+        const key = [...messages.values()].filter((element) => {
             return element.key.id === id
         })
 
@@ -133,7 +134,7 @@ const forward = async (req, res) => {
             forward: key[0],
         }
 
-        await sendMessage(session, jidFormat, queryForward, 0)
+        await sendMessage(session, jidFormat, queryForward, {}, 0)
 
         response(res, 200, true, 'The message has been successfully forwarded.')
     } catch {

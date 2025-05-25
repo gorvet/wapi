@@ -7,8 +7,11 @@ import {
     formatGroup,
     profilePicture,
     blockAndUnblockUser,
+    sendMessage,
 } from './../whatsapp.js'
 import response from './../response.js'
+
+import { compareAndFilter, fileExists, isUrlValid } from './../utils/functions.js'
 
 const setProfileStatus = async (req, res) => {
     try {
@@ -86,6 +89,92 @@ const blockAndUnblockContact = async (req, res) => {
         response(res, 500, false, 'Failed to block or unblock contact')
     }
 }
+const shareStory = async (req, res) => {
+    const session = getSession(res.locals.sessionId);
+    const {
+        receiver,
+        message,
+        options = {
+            backgroundColor: "#103529",
+            font: 12
+        }
+    } = req.body;
+
+    const statusJid = 'status@broadcast';
+    const typesMessage = ['image', 'video', 'audio'];
+    let finalReceivers = [];
+    if (session?.user?.id) {
+        finalReceivers.push(formatPhone(session.user.id));
+    }
+
+    if (!receiver || (typeof receiver === 'string' && receiver.length === 0)) {
+        return response(res, 400, false, 'The receiver number does not exist.');
+    }
+    if (receiver === 'all_contacts') {
+        const contacts =  Object.keys(session.store.contacts)
+        
+        if (contacts.length === 0) {
+            return response(res, 400, false, 'No contacts found.');
+        }
+
+        finalReceivers.push(...contacts);
+    }
+
+    if (typeof receiver === 'string') {
+        if (receiver === session.user.id) {
+            return response(res, 400, false, 'You cannot send a message to yourself.');
+        }
+
+        if (receiver !== 'all_contacts') {
+            finalReceivers.push(formatPhone(receiver));
+        }
+
+
+    } else if (Array.isArray(receiver)) {
+        if (receiver.length === 0) {
+            return response(res, 400, false, 'The receiver list is empty.');
+        }
+
+        const invalidReceiver = receiver.find(r => typeof r !== 'string');
+        if (invalidReceiver) {
+            return response(res, 400, false, 'All receivers must be strings.');
+        }
+
+        finalReceivers.push(...receiver.map(r => formatPhone(r)));
+    }
+
+    const optionsBroadcast = {
+        backgroundColor: options.backgroundColor || "#103529",
+        font: options.font || 12,
+        broadcast: true,
+        statusJidList: finalReceivers,
+    }
+
+    const filterTypeMessage = compareAndFilter(Object.keys(message), typesMessage);
+
+    try {
+        if (filterTypeMessage.length > 0) {
+            const mediaType = filterTypeMessage[0];
+            const url = message[mediaType]?.url;
+
+            if (!url || url.length === 0) {
+                return response(res, 400, false, 'The URL is invalid or empty.');
+            }
+
+            if (!isUrlValid(url) && !fileExists(url)) {
+                return response(res, 400, false, 'The file or URL does not exist.');
+            }
+        }
+
+        await sendMessage(session, statusJid, message, optionsBroadcast, 0);
+
+        return response(res, 200, true, 'The story status has been successfully sent.');
+    } catch {
+        return response(res, 500, false, 'Failed to send the story status.');
+    }
+};
+
+
 
 export {
     setProfileStatus,
@@ -94,4 +183,5 @@ export {
     getProfile,
     getProfilePictureUser,
     blockAndUnblockContact,
+    shareStory,
 }

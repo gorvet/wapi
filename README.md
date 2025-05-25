@@ -1,4 +1,6 @@
+
 # Baileys API
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/andresayac/baileys-api)
 
 An implementation of [@whiskeysockets/Baileys](https://github.com/whiskeysockets/Baileys) as a simple RESTful API service with multiple device support. This project implements both **Multi-Device** client so that you can choose and use one of them easily.
 
@@ -86,9 +88,6 @@ At this moment we are working to bring more functionalities
         => Send Message Contact
         => Send Message Location
         => Send Message React
-        => Send Message List (Deprecated)
-        => Send Message Buttons (Deprecated)
-        => Send Message Template (Deprecated)
         => Send Message How To Forward
 ### Groups
     * Get Chat List
@@ -107,11 +106,11 @@ At this moment we are working to bring more functionalities
 ### Misc
     * Update Profile Status
     * Update Profile Name
-    * Update Progile Image (NEW)
-    * Get My Profile {name, phote, status} (NEW)
-    * Get Profile User (NEW)
-    * Block And Unblock User (NEW)
-
+    * Update Progile Image
+    * Get My Profile {name, phote, status}
+    * Get Profile User
+    * Block And Unblock User
+    * Public Story Status (NEW)
 ### Webhook
     * Global webhook
 

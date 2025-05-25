@@ -53,4 +53,14 @@ router.post(
     controller.blockAndUnblockContact,
 )
 
+router.post(
+    '/public-story-status',
+    query('id').notEmpty(),
+    body('receiver').notEmpty(),
+    body('message').notEmpty(),
+    requestValidator,
+    sessionValidator,
+    controller.shareStory,
+)
+
 export default router
