@@ -24,8 +24,8 @@ import axios from 'axios'
 import NodeCache from 'node-cache'
 
 import https from 'https';
-import MySQLStorage from './mysqlStorage.js';
-import useDBAuthState from './useDBAuthState.js';
+import MySQLStorage from './mysqlstoraje/mysqlStorage.js';
+import useDBAuthState from './mysqlstoraje/useDBAuthState.js';
 
  
 
