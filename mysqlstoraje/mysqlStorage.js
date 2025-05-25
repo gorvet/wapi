@@ -189,13 +189,13 @@ static async deleteCredsData(sessionId) {
         }
 
         const row = rows[0];
-        //console.log('Row recibido:', row.fstore);
+        console.log('Row recibido:', row.fstore);
 
         // Intenta deserializar el campo `fstore` completo
         let parsedFstore;
         try {
             parsedFstore = JSON.parse(row.fstore); // Deserializa `fstore` una sola vez
-            //console.log('Deserializado correctamente:', parsedFstore);
+            console.log('Deserializado correctamente:', parsedFstore);
         } catch (error) {
             console.error('Error al deserializar fstore:', error.message);
             throw new Error('El dato fstore no es un JSON válido.');
