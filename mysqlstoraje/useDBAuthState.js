@@ -1,6 +1,6 @@
 import MySQLStorage from './mysqlStorage.js';
 
-import { WAProto as proto, initAuthCreds, BufferJSON } from "@whiskeysockets/baileys";
+import { WAProto as proto, initAuthCreds, BufferJSON } from "baileys";
 
 //import { initAuthCreds } from './node_modules/@whiskeysockets/baileys/lib/Utils/auth-utils.js'; // Asegúrate de incluir la extensión .js
 //import WAProto from './node_modules/@whiskeysockets/baileys/WAProto/index.js'; // Importa el módulo completo
