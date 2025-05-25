@@ -3,3 +3,5 @@ package-lock.json
 yarn.lock
 .env
 bun.lock
+.zip
+node_modules.zip
