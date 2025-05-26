@@ -45,9 +45,18 @@ function makeInMemoryStore() {
             isLatest,
             syncType
         }) => {
-            if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
+            /*if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
                 return;
-            }
+            }*/
+            if (
+    proto &&
+    proto.HistorySync &&
+    proto.HistorySync.HistorySyncType &&
+    syncType === proto.HistorySync.HistorySyncType.ON_DEMAND
+) {
+    return;
+}
+
 
             if (isLatest) {
                 chats.clear();

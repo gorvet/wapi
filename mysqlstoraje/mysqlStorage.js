@@ -144,10 +144,10 @@ static async deleteCredsData(sessionId) {
     try {
         // Serializa los datos
         const serializedStore = JSON.stringify(sessionData);
-        const serializedChats = JSON.stringify(chats);
-        const serializedMessages = JSON.stringify(messages);
-        const serializedLabels = JSON.stringify(labels);
-        const serializedLabelAssociations = JSON.stringify(labelAssociations);
+        const serializedChats = JSON.stringify([...chats]);
+        const serializedMessages = JSON.stringify([...messages]);
+        const serializedLabels = JSON.stringify([...labels]);
+        const serializedLabelAssociations = JSON.stringify([...labelAssociations]);
 
         // Ejecuta la consulta
         await dbConfig.query(query, [
@@ -203,11 +203,11 @@ static async deleteCredsData(sessionId) {
 
         // Devuelve el objeto deserializado directamente, sin volver a parsear sus propiedades
         return {
-            chats: parsedFstore.chats || [],
-            contacts: parsedFstore.contacts || {},
-            messages: parsedFstore.messages || {},
-            labels: parsedFstore.labels || [],
-            labelAssociations: parsedFstore.labelAssociations || [],
+            chats: new Map(parsedFstore.chats || []),
+            contacts: new Map(parsedFstore.contacts || []),
+            messages: new Map(parsedFstore.messages || []),
+            labels: new Map(parsedFstore.labels || []),
+            labelAssociations: new Map(parsedFstore.labelAssociations || []),
         };
     } catch (error) {
         console.error('Error retrieving user data:', error);
