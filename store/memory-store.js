@@ -16,12 +16,12 @@ function makeInMemoryStore() {
                 case 'notify':
                     for (const msg of newMessages) {
                         const jid = jidNormalizedUser(msg.key.remoteJid);
-                        
+
                         if (!messages.has(jid)) {
                             messages.set(jid, new Map());
                         }
                         const list = messages.get(jid);
-        
+
                         list.set(msg.key.id, msg);
 
                         if (type === 'notify' && !chats.has(jid)) {
@@ -45,20 +45,10 @@ function makeInMemoryStore() {
             isLatest,
             syncType
         }) => {
-            /*if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
+            if (syncType === 6) {
                 return;
-            }*/
-            if (
-    proto &&
-    proto.HistorySync &&
-    proto.HistorySync.HistorySyncType &&
-    syncType === proto.HistorySync.HistorySyncType.ON_DEMAND
-) {
-    return;
-}
-
-
-            if (isLatest) {
+            }
+             if (isLatest) {
                 chats.clear();
 
                 for (const jid of messages.keys()) {
@@ -74,19 +64,26 @@ function makeInMemoryStore() {
                 }
             }
 
+            const contactsUpsert = (newContacts) => {
+                const oldContacts = [];
+                for (const contact of newContacts) {
+                    const jid = jidNormalizedUser(contact.id);
+                    if (!contacts[jid]) {
+                        contacts[jid] = contact;
+                        oldContacts.push(jid);
+                    } else {
+                        Object.assign(contacts[jid], contact);
+                    }
+                }
+                return oldContacts;
+            }
+
             const oldContacts = contactsUpsert(newContacts);
             if (isLatest) {
                 for (const jid of oldContacts) {
                     delete contacts[jid];
                 }
             }
-
-            for (const msg of newMessages) {
-                const jid = msg.key.remoteJid;
-                const list = assertMessageList(jid);
-                list.set(msg.key.id, msg);
-            }
-
         });
 
 
@@ -102,12 +99,12 @@ function makeInMemoryStore() {
 
                 if (existing) {
                     if (update.unreadCount > 0) {
-                        update = { ...update }; 
+                        update = { ...update };
                         update.unreadCount = (existing.unreadCount || 0) + update.unreadCount;
                     }
 
                     Object.assign(existing, update);
-                } 
+                }
             }
         });
 

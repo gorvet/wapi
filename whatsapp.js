@@ -173,7 +173,7 @@ setInterval(async () => {
         logger,
         msgRetryCounterCache,
         generateHighQualityLinkPreview: true,
-        browser: ['Botzy', 'Chrome', '20.0.04'],
+        //browser: ['Botzy', 'Chrome', '20.0.04'],
         getMessage,
     })
     store?.bind(wa.ev)
