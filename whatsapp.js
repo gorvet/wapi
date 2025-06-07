@@ -111,7 +111,7 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
     console.log(`using WA v${version.join('.')}, isLatest: ${isLatest}`)
 
     // Load store
-    store?.readFromFile(sessionsDir(`${sessionId}_store.json`))
+    //store?.readFromFile(sessionsDir(`${sessionId}_store.json`))
 
     const getDatas = async (sessionId) => {
     try { 
@@ -125,6 +125,7 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
         store.messages=new Map(sessionData.messages)
         store.labels=new Map(sessionData.labels)
         store.labelAssociations=new Map(sessionData.labelAssociations)
+       
        
     } catch (err) {
         // Captura el error y muestra detalles adicionales
@@ -143,7 +144,7 @@ setInterval(async () => {
             console.log('El guardado anterior aún está en proceso. Esperando...');
             return;
         }
-        console.log(store)
+        //console.log(store)
         if (store) {
             isSaving = true; // Bloquea nuevas ejecuciones mientras se guarda
             console.log('Iniciando guardado de datos para la sesión:', sessionId);
@@ -154,7 +155,7 @@ setInterval(async () => {
     } finally {
         isSaving = false; // Libera la bandera
     }
-}, 10000);
+}, 60000);
 
     // Make both Node and Bun compatible
     const makeWASocket = makeWASocketModule.default ?? makeWASocketModule;

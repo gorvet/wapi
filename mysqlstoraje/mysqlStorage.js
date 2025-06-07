@@ -189,13 +189,13 @@ static async deleteCredsData(sessionId) {
         }
 
         const row = rows[0];
-        console.log('Row recibido:', row.fstore);
+        //console.log('Row recibido:', row.fstore);
 
         // Intenta deserializar el campo `fstore` completo
         let parsedFstore;
         try {
             parsedFstore = JSON.parse(row.fstore); // Deserializa `fstore` una sola vez
-            console.log('Deserializado correctamente:', parsedFstore);
+            //console.log('Deserializado correctamente:', parsedFstore);
         } catch (error) {
             console.error('Error al deserializar fstore:', error.message);
             throw new Error('El dato fstore no es un JSON válido.');
@@ -203,11 +203,19 @@ static async deleteCredsData(sessionId) {
 
         // Devuelve el objeto deserializado directamente, sin volver a parsear sus propiedades
         return {
-            chats: new Map(parsedFstore.chats || []),
+            
+            /*chats: new Map(parsedFstore.chats || []),
             contacts: new Map(parsedFstore.contacts || []),
             messages: new Map(parsedFstore.messages || []),
             labels: new Map(parsedFstore.labels || []),
             labelAssociations: new Map(parsedFstore.labelAssociations || []),
+            */
+            chats: parsedFstore.chats || {},
+            contacts: parsedFstore.contacts || {},
+            messages: parsedFstore.messages || {},
+            labels: parsedFstore.labels || {},
+            labelAssociations: parsedFstore.labelAssociations || {},
+            
         };
     } catch (error) {
         console.error('Error retrieving user data:', error);
