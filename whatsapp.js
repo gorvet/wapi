@@ -24,10 +24,9 @@ import axios from 'axios'
 import NodeCache from 'node-cache'
 
 import https from 'https';
-import MySQLStorage from './mysqlStorage.js';
-import useDBAuthState from './useDBAuthState.js';
 
- 
+import MySQLStorage from './mysqlstoraje/mysqlStorage.js';
+import useDBAuthState from './mysqlstoraje/useDBAuthState.js';
 
 
 const msgRetryCounterCache = new NodeCache()
@@ -111,6 +110,7 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
     const { state, saveCreds } = await useDBAuthState(sessionId);
 
 
+
      // Fetch latest version of WA Web
     const { version, isLatest } = await fetchLatestBaileysVersion()
     console.log(`using WA v${version.join('.')}, isLatest: ${isLatest}`)
@@ -122,14 +122,16 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
     try { 
         const sessionData = await MySQLStorage.getUserData(sessionId);
        if (!sessionData) {
-    //console.error('getUserData no retornó datos válidos:', sessionData);
+
+    console.error('getUserData no retornó datos válidos:', sessionData);
     return;
-    }
-        store.chats=sessionData.chats
-        store.contacts=sessionData.contacts
-        store.messages=sessionData.messages
-        store.labels=sessionData.labels
-        store.labelAssociations=sessionData.labelAssociations
+    }   
+        store.chats=new Map(sessionData.chats)
+        store.contacts=new Map(sessionData.contacts)
+        store.messages=new Map(sessionData.messages)
+        store.labels=new Map(sessionData.labels)
+        store.labelAssociations=new Map(sessionData.labelAssociations)
+       
        
     } catch (err) {
         // Captura el error y muestra detalles adicionales
@@ -147,7 +149,20 @@ setInterval(async () => {
         if (isSaving) {
             console.log('El guardado anterior aún está en proceso. Esperando...');
             return;
+
         }
+        //console.log(store)
+        if (store) {
+            isSaving = true; // Bloquea nuevas ejecuciones mientras se guarda
+            console.log('Iniciando guardado de datos para la sesión:', sessionId);
+            await MySQLStorage.setUserData(sessionId, store);
+        }
+    } catch (error) {
+        console.error('Error durante el guardado periódico:', error);
+    } finally {
+        isSaving = false; // Libera la bandera
+    }
+}, 60000);
 
         if (store) {
             isSaving = true; // Bloquea nuevas ejecuciones mientras se guarda
@@ -177,7 +192,8 @@ setInterval(async () => {
         logger,
         msgRetryCounterCache,
         generateHighQualityLinkPreview: true,
-        browser: ['Botzy', 'Chrome', '20.0.04'],
+
+        //browser: ['Botzy', 'Chrome', '20.0.04'],
         getMessage,
     })
     store?.bind(wa.ev)

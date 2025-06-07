@@ -360,6 +360,8 @@ class ConcurrentStore extends EventEmitter {
             if (stats.size < 10) {
                 // console.log('⚠️ Store file is empty or corrupted, checking backup...');
 
+
+
                 // Try loading from backup
                 const backupFile = `${file}.backup`;
                 const backupStats = await fs.stat(backupFile).catch(() => null);
