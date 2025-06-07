@@ -163,18 +163,7 @@ setInterval(async () => {
         isSaving = false; // Libera la bandera
     }
 }, 60000);
-
-        if (store) {
-            isSaving = true; // Bloquea nuevas ejecuciones mientras se guarda
-            //console.log('Iniciando guardado de datos para la sesión:', sessionId);
-            await MySQLStorage.setUserData(sessionId, store);
-        }
-    } catch (error) {
-        console.error('Error durante el guardado periódico:', error);
-    } finally {
-        isSaving = false; // Libera la bandera
-    }
-}, 20000);
+          
     // Make both Node and Bun compatible
     const makeWASocket = makeWASocketModule.default ?? makeWASocketModule;
 
