@@ -1,9 +1,8 @@
 import { rmSync, readdir, existsSync } from 'fs'
 import { join } from 'path'
 import pino from 'pino'
-import makeWASocket, {
+import makeWASocketModule, {
     useMultiFileAuthState,
-    makeInMemoryStore,
     makeCacheableSignalKeyStore,
     DisconnectReason,
     delay,
@@ -11,9 +10,11 @@ import makeWASocket, {
     getAggregateVotesInPollMessage,
     fetchLatestBaileysVersion,
     WAMessageStatus,
-} from '@whiskeysockets/baileys'
+} from 'baileys'
 
-import proto from '@whiskeysockets/baileys'
+import proto from 'baileys'
+
+import makeInMemoryStore from './store/memory-store.js'
 
 import { toDataURL } from 'qrcode'
 import __dirname from './dirname.js'
@@ -99,11 +100,16 @@ const webhook = async (instance, type, data) => {
 const createSession = async (sessionId, res = null, options = { usePairingCode: false, phoneNumber: '' }) => {
     const sessionFile = 'md_' + sessionId
     const logger = pino({ level: 'silent' })
-    const store = makeInMemoryStore({ logger })
-    
-   //const { state, saveCreds } = await useMultiFileAuthState(sessionsDir(sessionFile))
-   const { state, saveCreds } = await useDBAuthState(sessionId);
-    
+    const store = makeInMemoryStore({
+        preserveDataDuringSync: true,
+        backupBeforeSync: false,
+        incrementalSave: true,
+        maxMessagesPerChat: 150,
+        autoSaveInterval: 10000,
+        storeFile: sessionsDir(`${sessionId}_store.json`)
+    });
+    const { state, saveCreds } = await useDBAuthState(sessionId);
+
 
      // Fetch latest version of WA Web
     const { version, isLatest } = await fetchLatestBaileysVersion()
@@ -154,11 +160,13 @@ setInterval(async () => {
         isSaving = false; // Libera la bandera
     }
 }, 20000);
+    // Make both Node and Bun compatible
+    const makeWASocket = makeWASocketModule.default ?? makeWASocketModule;
 
     /**
-     * @type {import('@whiskeysockets/baileys').AnyWASocket}
+     * @type {import('baileys').AnyWASocket}
      */
-    const wa = makeWASocket.default({
+    const wa = makeWASocket({
         version,
         printQRInTerminal: false,
         mobile: false,
@@ -332,7 +340,7 @@ setInterval(async () => {
     })
 
     wa.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update
+        const { connection, lastDisconnect, qr } = update
         const statusCode = lastDisconnect?.error?.output?.statusCode
 
         callWebhook(sessionId, 'CONNECTION_UPDATE', update)
@@ -358,15 +366,13 @@ setInterval(async () => {
             )
         }
 
-        if (update.qr) {
+        if (qr) {
             if (res && !res.headersSent) {
                 callWebhook(sessionId, 'QRCODE_UPDATED', update)
 
                 try {
-                    const qr = await toDataURL(update.qr)
-
-                    response(res, 200, true, 'QR code received, please scan the QR code.', { qr })
-
+                    const qrcode = await toDataURL(qr)
+                    response(res, 200, true, 'QR code received, please scan the QR code.', { qrcode })
                     return
                 } catch {
                     response(res, 500, false, 'Unable to create QR code.')
@@ -420,7 +426,7 @@ setInterval(async () => {
 
     async function getMessage(key) {
         if (store) {
-            const msg = await store.loadMessage(key.remoteJid, key.id)
+            const msg = await store.loadMessages(key.remoteJid, key.id)
             return msg?.message || undefined
         }
 
@@ -430,7 +436,7 @@ setInterval(async () => {
 }
 
 /**
- * @returns {(import('@whiskeysockets/baileys').AnyWASocket|null)}
+ * @returns {(import('baileys').AnyWASocket|null)}
  */
 const getSession = (sessionId) => {
     return sessions.get(sessionId) ?? null
@@ -457,14 +463,12 @@ const deleteSession = async (sessionId) => {
 
 const getChatList = (sessionId, isGroup = false) => {
     const filter = isGroup ? '@g.us' : '@s.whatsapp.net'
-
-    return getSession(sessionId).store.chats.filter((chat) => {
-        return chat.id.endsWith(filter)
-    })
+    const chats = getSession(sessionId).store.chats
+    return [...chats.values()].filter(chat => chat.id.endsWith(filter))
 }
 
 /**
- * @param {import('@whiskeysockets/baileys').AnyWASocket} session
+ * @param {import('baileys').AnyWASocket} session
  */
 const isExists = async (session, jid, isGroup = false) => {
     try {
@@ -485,19 +489,19 @@ const isExists = async (session, jid, isGroup = false) => {
 }
 
 /**
- * @param {import('@whiskeysockets/baileys').AnyWASocket} session
+ * @param {import('baileys').AnyWASocket} session
  */
-const sendMessage = async (session, receiver, message, delayMs = 1000) => {
+const sendMessage = async (session, receiver, message, options = {}, delayMs = 1000) => {
     try {
         await delay(parseInt(delayMs))
-        return await session.sendMessage(receiver, message)
+        return await session.sendMessage(receiver, message, options)
     } catch {
         return Promise.reject(null) // eslint-disable-line prefer-promise-reject-errors
     }
 }
 
 /**
- * @param {import('@whiskeysockets/baileys').AnyWASocket} session
+ * @param {import('baileys').AnyWASocket} session
  */
 const updateProfileStatus = async (session, status) => {
     try {
@@ -613,7 +617,7 @@ const readMessage = async (session, keys) => {
 
 const getStoreMessage = async (session, messageId, remoteJid) => {
     try {
-        return await session.store.loadMessage(remoteJid, messageId)
+        return await session.store.loadMessages(remoteJid, messageId)
     } catch {
         // eslint-disable-next-line prefer-promise-reject-errors
         return Promise.reject(null)

@@ -7021,7 +7021,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\r\n    \"receiver\": \"573002782284\",\r\n    \"message\": {\r\n        \"text\": \"hello there!\"\r\n    },\r\n    \"options\": {\r\n        \"backgroundColor\": \"#103529\",\r\n        \"font\": 12,\r\n        \"broadcast\": true,\r\n        \"statusJidList\": [\r\n            \"573002782284@s.whatsapp.net\",\r\n            \"573219100149@s.whatsapp.net\"\r\n        ]\r\n    }\r\n}",
+									"raw": "{\r\n    \"receiver\": \"all_contacts\",\r\n    \"message\": {\r\n        \"text\": \"hello there!\"\r\n    },\r\n    \"options\": {\r\n        \"backgroundColor\": \"#103529\",\r\n        \"font\": 12\r\n    }\r\n}",
 									"options": {
 										"raw": {
 											"language": "json"
@@ -7045,7 +7045,7 @@
 										}
 									]
 								},
-								"description": "Send message to someone."
+								"description": "**Create Text Story**\n\n**Parameter:** `receiver` — _string_ or _array_\n\nUse the `receiver` field to specify the contact(s) who will receive the story. Depending on your use case, follow the format below:\n\n- **To send to all contacts:** \"receiver\": \"all_contacts\"\n    \n- **To send to a specific contact: use** \"receiver\": \"628231xxxxx\" or \"receiver\": \\[\"628231xxxxx\"\\]\n    \n- **To send to multiple contacts:** \"receiver\": \\[\"628231xxxxx\", \"628231xxxxx\", \"628231xxxxx\"\\]"
 							},
 							"response": [
 								{
@@ -7207,7 +7207,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\r\n    \"message\": {\r\n        \"image\": {\r\n            \"url\": \"https://raw.githubusercontent.com/pedrazadixon/sample-files/main/sample_image.jpg\"\r\n        },\r\n        \"caption\": \"My logo\"\r\n    },\r\n    \"options\": {\r\n        \"backgroundColor\": \"#103529\",\r\n        \"font\": 12,\r\n        \"broadcast\": true,\r\n        \"statusJidList\": [\"573002782284@s.whatsapp.net\", \"573219100149@s.whatsapp.net\"]\r\n    }\r\n}",
+									"raw": "{\r\n    \"receiver\": \"all_contacts\",\r\n    \"message\": {\r\n        \"image\": {\r\n            \"url\": \"https://raw.githubusercontent.com/pedrazadixon/sample-files/main/sample_image.jpg\"\r\n        },\r\n        \"caption\": \"My logo\"\r\n    },\r\n    \"options\": {\r\n        \"backgroundColor\": \"#103529\",\r\n        \"font\": 12\r\n    }\r\n}",
 									"options": {
 										"raw": {
 											"language": "json"
@@ -7231,7 +7231,7 @@
 										}
 									]
 								},
-								"description": "Send image to someone important specify the url  \nthe caption is not required."
+								"description": "**Create Image Story**\n\n**Parameter:** `receiver` — _string_ or _array_\n\nUse the `receiver` field to specify the contact(s) who will receive the story. Depending on your use case, follow the format below:\n\n- **To send to all contacts:** \"receiver\": \"all_contacts\"\n    \n- **To send to a specific contact: use** \"receiver\": \"628231xxxxx\" or \"receiver\": \\[\"628231xxxxx\"\\]\n    \n- **To send to multiple contacts:** \"receiver\": \\[\"628231xxxxx\", \"628231xxxxx\", \"628231xxxxx\"\\]"
 							},
 							"response": [
 								{
@@ -7393,7 +7393,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\r\n    \"receiver\": \"{{receiver}}\",\r\n    \"isGroup\": {{isGroup}},\r\n    \"isBase64\": false,\r\n    \"message\": {\r\n        \"video\": {\r\n            \"url\": \"https://raw.githubusercontent.com/WhiskeySockets/Baileys/master/Media/ma_gif.mp4\"\r\n        },\r\n        \"caption\": \"My viedo\"\r\n    }\r\n}",
+									"raw": "{\r\n    \"receiver\": \"all_contacts\",\r\n    \"message\": {\r\n        \"video\": {\r\n            \"url\": \"https://raw.githubusercontent.com/WhiskeySockets/Baileys/master/Media/ma_gif.mp4\"\r\n        },\r\n        \"caption\": \"My viedo\"\r\n    },\r\n    \"options\": {\r\n        \"backgroundColor\": \"#103529\",\r\n        \"font\": 12\r\n    }\r\n}",
 									"options": {
 										"raw": {
 											"language": "json"
@@ -7417,7 +7417,7 @@
 										}
 									]
 								},
-								"description": "Send video to someone, important to specify the url"
+								"description": "**Create Video Story**\n\n**Parameter:** `receiver` — _string_ or _array_\n\nUse the `receiver` field to specify the contact(s) who will receive the story. Depending on your use case, follow the format below:\n\n- **To send to all contacts:** \"receiver\": \"all_contacts\"\n    \n- **To send to a specific contact: use** \"receiver\": \"628231xxxxx\" or \"receiver\": \\[\"628231xxxxx\"\\]\n    \n- **To send to multiple contacts:** \"receiver\": \\[\"628231xxxxx\", \"628231xxxxx\", \"628231xxxxx\"\\]"
 							},
 							"response": [
 								{
@@ -7579,7 +7579,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\r\n    \"receiver\": \"573002782284\",\r\n    \"message\": {\r\n        \"audio\": {\r\n            \"url\": \"https://github.com/pedrazadixon/sample-files/raw/main/sample_mp3.mp3\"\r\n        }\r\n    },    \r\n    \"options\": {\r\n        \"backgroundColor\": \"#103529\",\r\n        \"font\": 10,\r\n        \"broadcast\": true,\r\n        \"statusJidList\": [\r\n            \"573002782284@s.whatsapp.net\",\r\n            \"573219100149@s.whatsapp.net\"\r\n        ]\r\n    }\r\n}",
+									"raw": "{\r\n    \"receiver\": \"all_contacts\",\r\n    \"message\": {\r\n        \"audio\": {\r\n            \"url\": \"https://github.com/pedrazadixon/sample-files/raw/main/sample_mp3.mp3\"\r\n        }\r\n    },    \r\n    \"options\": {\r\n        \"backgroundColor\": \"#103529\",\r\n        \"font\": 10\r\n    }\r\n}",
 									"options": {
 										"raw": {
 											"language": "json"
@@ -7603,7 +7603,7 @@
 										}
 									]
 								},
-								"description": "Send message to someone."
+								"description": "**Create Audio Story**\n\n**Parameter:** `receiver` — _string_ or _array_\n\nUse the `receiver` field to specify the contact(s) who will receive the story. Depending on your use case, follow the format below:\n\n- **To send to all contacts:** \"receiver\": \"all_contacts\"\n    \n- **To send to a specific contact: use** \"receiver\": \"628231xxxxx\" or \"receiver\": \\[\"628231xxxxx\"\\]\n    \n- **To send to multiple contacts:** \"receiver\": \\[\"628231xxxxx\", \"628231xxxxx\", \"628231xxxxx\"\\]"
 							},
 							"response": [
 								{
