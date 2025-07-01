@@ -1,10 +1,7 @@
-import MySQLStorage from './mysqlStorage.js';
-
 import { WAProto as proto, initAuthCreds, BufferJSON } from "baileys";
+import MySQLAuthStore from './mysql-auth-store.js';
 
-//import { initAuthCreds } from './node_modules/@whiskeysockets/baileys/lib/Utils/auth-utils.js'; // Asegúrate de incluir la extensión .js
-//import WAProto from './node_modules/@whiskeysockets/baileys/WAProto/index.js'; // Importa el módulo completo
-//const { proto } = WAProto;
+const storage = new MySQLAuthStore();
 
 const useDBAuthState = async (sessionId) => {
     if (!sessionId) {
@@ -12,7 +9,7 @@ const useDBAuthState = async (sessionId) => {
     }
     
     // Cargar credenciales iniciales o generar nuevas si no existen
-     const dataRaw = await MySQLStorage.getCredsData(sessionId, 'creds')  || JSON.stringify((0, initAuthCreds)());
+     const dataRaw = await storage.getCredsData(sessionId, 'creds')  || JSON.stringify((0, initAuthCreds)());
      const creds = JSON.parse(dataRaw, BufferJSON.reviver);
 
       return { 
@@ -21,7 +18,7 @@ const useDBAuthState = async (sessionId) => {
             keys: {
                 get: async (type, ids) => { 
                     const data = {};
-                    const allKeysRaw = await MySQLStorage.getCredsData(sessionId, 'session_keys') //|| '{}';
+                    const allKeysRaw = await storage.getCredsData(sessionId, 'session_keys') //|| '{}';
                     if (!allKeysRaw) {
                         console.error('No se encontraron datos de claves para la sesión:', sessionId);
                         return {}; // Devuelve un objeto vacío si no se encuentran datos
@@ -57,7 +54,7 @@ const useDBAuthState = async (sessionId) => {
                     }
                       const allKeysString= JSON.stringify(allKeys, BufferJSON.replacer);
                       //await Promise.all(allKeys);
-                     await MySQLStorage.setCredsData(sessionId, allKeysString, 'session_keys');
+                     await storage.setCredsData(sessionId, allKeysString, 'session_keys');
                 },
             },
         },
@@ -65,7 +62,8 @@ const useDBAuthState = async (sessionId) => {
         // Guardar credenciales en la base de datos
         saveCreds: async () => {
             const dataString = JSON.stringify(creds, BufferJSON.replacer);
-            await MySQLStorage.setCredsData(sessionId, dataString, 'creds'); //se jonsifica el mysql...js
+            await storage.setCredsData(sessionId, dataString, 'creds');
+            
         },
     };
 };

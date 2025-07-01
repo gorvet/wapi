@@ -1,7 +1,6 @@
-import fs from 'fs/promises';
-import path from 'path';
 import { jidNormalizedUser, toNumber, isJidUser } from 'baileys';
 import { EventEmitter } from 'events';
+import mysql from 'mysql2/promise';
 
 class ConcurrentStore extends EventEmitter {
     constructor(options = {}) {
@@ -11,13 +10,24 @@ class ConcurrentStore extends EventEmitter {
             maxMessagesPerChat: options.maxMessagesPerChat || 5000,
             autoSaveInterval: options.autoSaveInterval || 60000,
             batchSize: options.batchSize || 500,
-            storeFile: options.storeFile || path.resolve(process.cwd(), 'baileys_store.json'),
+            sessionId: options.sessionId || "",//?,
             // **New options for data preservation**
             preserveDataDuringSync: options.preserveDataDuringSync !== false, // true by default
             backupBeforeSync: options.backupBeforeSync !== false, // true by default
             incrementalSave: options.incrementalSave !== false, // true by default
             ...options
         };
+        this.sessionId = this.config.sessionId;
+        this.pool = mysql.createPool({
+            host: 'localhost',
+            user: process.env.DB_USER,
+            password: process.env.DB_PASWD,
+            database: process.env.DB_NAME,
+            waitForConnections: true,
+            connectionLimit: 30,
+            queueLimit: 0,
+            connectTimeout: 15000,
+    });
 
         // **Main stores**
         this.chats = new Map();
@@ -30,14 +40,7 @@ class ConcurrentStore extends EventEmitter {
         this.syncStartTime = null;
         this.hasInitialData = false;
 
-        // **Data backup during sync**
-        this.backupData = {
-            chats: new Map(),
-            messages: new Map(),
-            contacts: new Map(),
-            groupMetadata: new Map()
-        };
-
+        
         // **Concurrency control**
         this.writeLocks = new Map();
         this.pendingWrites = new Set();
@@ -72,75 +75,16 @@ class ConcurrentStore extends EventEmitter {
 
         // Only save if we have valid data
         if (this.hasValidData()) {
-            await this.writeToFile();
+            await this.writeToMySQL();
         }
     }
-
+ 
     //**Check if we have valid data to save**
     hasValidData() {
         return this.chats.size > 0 || this.messages.size > 0 || this.contacts.size > 0;
     }
 
-    // **Backup before sync**
-    async createBackup() {
-        if (!this.config.preserveDataDuringSync) return;
-
-        try {
-            // Memory backup
-            this.backupData.chats = new Map(this.chats);
-            this.backupData.messages = new Map();
-
-            // Deep backup of messages
-            for (const [jid, msgs] of this.messages.entries()) {
-                this.backupData.messages.set(jid, new Map(msgs));
-            }
-
-            this.backupData.contacts = new Map(this.contacts);
-            this.backupData.groupMetadata = new Map(this.groupMetadata);
-
-            // **Backup before sync**
-            if (this.config.backupBeforeSync) {
-                const backupFile = `${this.config.storeFile}.backup`;
-                await this.writeToFileInternal(backupFile, await this.serializeStoreData());
-                console.log('💾 Created backup before sync');
-            }
-
-        } catch (error) {
-            console.error('❌ Error creating backup:', error);
-        }
-    }
-
-    // **IMPROVED METHOD: processHistorySet with data preservation**
-    async restoreFromBackup() {
-        if (!this.config.preserveDataDuringSync || !this.hasBackupData()) return;
-
-        try {
-            console.log('🔄 Restoring from backup...');
-
-            this.chats = new Map(this.backupData.chats);
-            this.contacts = new Map(this.backupData.contacts);
-            this.groupMetadata = new Map(this.backupData.groupMetadata);
-
-            // Restore messages
-            this.messages.clear();
-            for (const [jid, msgs] of this.backupData.messages.entries()) {
-                this.messages.set(jid, new Map(msgs));
-            }
-
-            this.updateStats();
-            // console.log('✅ Restored from backup successfully');
-
-        } catch (error) {
-            // console.error('❌ Error restoring from backup:', error);
-        }
-    }
-
-    hasBackupData() {
-        return this.backupData.chats.size > 0 ||
-            this.backupData.messages.size > 0 ||
-            this.backupData.contacts.size > 0;
-    }
-
+     
     // **IMPROVED METHOD: processHistorySet with data preservation**
     async processHistorySet(historyData) {
         const {
@@ -161,13 +105,6 @@ class ConcurrentStore extends EventEmitter {
         if (!this.isProcessingHistory) {
             this.isProcessingHistory = true;
             this.syncStartTime = Date.now();
-            this.hasInitialData = this.hasValidData();
-
-            // **Create backup of existing data**
-            if (this.hasInitialData) {
-                await this.createBackup();
-                // console.log('🔒 Data backed up before sync');
-            }
         }
 
         try {
@@ -178,9 +115,7 @@ class ConcurrentStore extends EventEmitter {
                 // console.log('🧹 Clearing for latest sync with significant data...');
                 this.chats.clear();
                 this.messages.clear();
-            } else if (isLatest && this.hasInitialData) {
-                // console.log('⚠️ Latest sync but keeping existing data (small dataset)');
-            }
+            }  
 
             // **Process new data**
             const promises = [];
@@ -206,7 +141,7 @@ class ConcurrentStore extends EventEmitter {
             // console.log(`✅ History batch processed in ${processingTime}ms`);
 
             if (this.config.incrementalSave && this.hasValidData() && processingTime > 5000) {
-                await this.writeToFile();
+                await this.writeToMySQL();
                 // console.log('💾 Incremental save completed');
             }
 
@@ -223,10 +158,7 @@ class ConcurrentStore extends EventEmitter {
         } catch (error) {
             // console.error('❌ Error processing history set:', error);
 
-            // **Restore from backup in case of error**
-            if (this.hasInitialData) {
-                await this.restoreFromBackup();
-            }
+            
 
             this.emit('store.error', error);
         } finally {
@@ -245,17 +177,9 @@ class ConcurrentStore extends EventEmitter {
 
             // **Final save only if we have valid data**
             if (this.hasValidData()) {
-                await this.writeToFile();
+                await this.writeToMySQL();
                 // console.log('💾 Final save completed');
-            } else if (this.hasBackupData()) {
-                // If we do not have valid data, restore backup
-                await this.restoreFromBackup();
-                await this.writeToFile();
-                // console.log('🔄 Restored and saved backup data');
-            }
-
-            // **Clean up backup**
-            this.clearBackup();
+            }  
 
         } catch (error) {
             // console.error('❌ Error finalizing sync:', error);
@@ -265,21 +189,18 @@ class ConcurrentStore extends EventEmitter {
         }
     }
 
-    clearBackup() {
-        this.backupData.chats.clear();
-        this.backupData.messages.clear();
-        this.backupData.contacts.clear();
-        this.backupData.groupMetadata.clear();
-    }
+    
 
     // **Secure writing that preserves data**
-    async writeToFile(file = this.config.storeFile) {
+    async writeToMySQL() {
+        const sessionId = this.sessionId;
+        
+
         if (this.isWriting) {
-            this.pendingWrites.add(file);
+            this.pendingWrites.add(sessionId);
             return;
         }
 
-        // **Do not write if we do not have valid data**
         if (!this.hasValidData()) {
             // console.log('⚠️ Skipping write - no valid data to save');
             return;
@@ -287,104 +208,80 @@ class ConcurrentStore extends EventEmitter {
 
         try {
             this.isWriting = true;
-            await this.acquireWriteLock('file');
+            await this.acquireWriteLock('mysql');
 
             const data = await this.serializeStoreData();
-            await this.writeToFileInternal(file, data);
+            const fstore = JSON.stringify(data);
+            const chats = JSON.stringify(data.chats || []);
+            const contacts = JSON.stringify(data.contacts || []);
+            const messages = JSON.stringify(data.messages || {});
+            console.log("insertando store para" + sessionId)
+            //console.log(fstore)
+
+            await this.pool.execute(
+                `INSERT INTO wa_sessions (session_id, fstore, chats, contacts, messages)
+                VALUES (?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE 
+                fstore = VALUES(fstore),
+                chats = VALUES(chats),
+                contacts = VALUES(contacts),
+                messages = VALUES(messages)`,
+                [sessionId, fstore, chats, contacts, messages]
+            );
+            console.log("✅ Query ejecutada (o al menos no reventó)");
 
             this.stats.lastSave = new Date();
             this.lastSuccessfulSave = Date.now();
 
             this.emit('store.saved', {
-                file,
-                size: JSON.stringify(data).length,
+                sessionId,
+                size: fstore.length,
                 timestamp: this.stats.lastSave
             });
 
         } catch (error) {
-            // console.error('❌ Failed to write store:', error.message);
             this.emit('store.error', error);
         } finally {
             this.isWriting = false;
-            this.releaseWriteLock('file');
+            this.releaseWriteLock('mysql');
 
-            // Process pending writes
+            // Procesar escrituras pendientes
             if (this.pendingWrites.size > 0) {
-                const nextFile = this.pendingWrites.values().next().value;
-                this.pendingWrites.delete(nextFile);
-                setImmediate(() => this.writeToFile(nextFile));
-            }
+                const nextSessionId = this.pendingWrites.values().next().value;
+                this.pendingWrites.delete(nextSessionId);
+                setImmediate(() => this.writeToMySQL(nextSessionId));
+            }   
         }
     }
 
-    // **Internal method for atomic writing**
-    async writeToFileInternal(file, data) {
-        const tempFile = `${file}.tmp.${Date.now()}`;
-
+     
+ 
+    // **Read datas from db**
+    async readFromMySQL(sessionId) {
         try {
-            // Write to temporary file
-            await fs.writeFile(tempFile, JSON.stringify(data, null, 2));
+            await this.acquireWriteLock('mysql');
+            
+            const [rows] = await this.pool.execute(
+            'SELECT fstore FROM wa_sessions WHERE session_id = ? LIMIT 1',
+            [sessionId]
+            );  
+            const raw = rows?.[0]?.fstore;
 
-            // Check that the temporary file is not empty
-            const stats = await fs.stat(tempFile);
-            if (stats.size < 10) {// Less than 10 bytes indicates a virtually empty file
-                throw new Error('Generated file is too small, likely empty');
+            // Verifica que exista y no esté vacío o corrupto
+            if (!raw || typeof raw !== 'string' || raw.trim().length < 10) {
+                // console.log('⚠️ No se encontró contenido válido en la base de datos para '+ sessionId);
+                return;
             }
 
-            // Atomically move
-            await fs.rename(tempFile, file);
-
-        } catch (error) {
-            // Clean up temporary file in case of error
+            let data;
             try {
-                await fs.unlink(tempFile);
-            } catch (cleanupError) {
-                // Ignore cleanup errors
+                data = JSON.parse(raw);
+            } catch (err) {
+                throw new Error('❌ El contenido de fstore no es un JSON válido');
             }
-            throw error;
-        }
-    }
-
-    // **Improved reading that handles corrupted files**
-    async readFromFile(file = this.config.storeFile) {
-        try {
-            await this.acquireWriteLock('file');
-
-            const stats = await fs.stat(file).catch(() => null);
-            if (!stats) {
-                // console.log('📄 No existing store file found');
-                return;
-            }
-
-            // **Verify that the file is not empty**
-            if (stats.size < 10) {
-                // console.log('⚠️ Store file is empty or corrupted, checking backup...');
-
-                // Try loading from backup
-                const backupFile = `${file}.backup`;
-                const backupStats = await fs.stat(backupFile).catch(() => null);
-
-                if (backupStats && backupStats.size > 10) {
-                    // console.log('🔄 Loading from backup file...');
-                    return await this.readFromFile(backupFile);
-                }
-
-                // console.log('❌ No valid backup found');
-                return;
-            }
-
-            const raw = await fs.readFile(file, 'utf-8');
-
-            // **Verify that the content is not empty**
-            if (!raw.trim()) {
-                // console.log('⚠️ Store file content is empty');
-                return;
-            }
-
-            const data = JSON.parse(raw);
 
             if (!this.validateStoreData(data)) {
-                throw new Error('Invalid store data structure');
+                throw new Error('❌ Estructura de datos inválida en el store');
             }
 
             await this.loadStoreData(data);
@@ -392,17 +289,17 @@ class ConcurrentStore extends EventEmitter {
             this.stats.lastSave = new Date();
             this.hasInitialData = true;
 
-            // console.log(`✅ Store loaded: ${this.stats.totalChats} chats, ${this.stats.totalMessages} messages, ${this.stats.totalContacts} contacts`);
+            // console.log(`✅ Store cargado desde MySQL: ${this.stats.totalChats} chats, ${this.stats.totalMessages} mensajes, ${this.stats.totalContacts} contactos`);
 
-            this.emit('store.loaded', { file, size: stats.size });
+            this.emit('store.loaded', { source: 'mysql', sessionId });
 
-        } catch (error) {
-            // console.error('❌ Failed to read store:', error.message);
-            this.emit('store.error', error);
-        } finally {
-            this.releaseWriteLock('file');
+            } catch (error) {
+                this.emit('store.error', error);
+            } finally {
+                this.releaseWriteLock('mysql');
         }
     }
+ 
 
     // **Other methods optimized...**
     async processChatsOptimized(newChats) {
@@ -443,7 +340,7 @@ class ConcurrentStore extends EventEmitter {
                 try {
                     const jid = jidNormalizedUser(contact.id);
 
-                    if (!isJidUser(jid)) {
+                     if (!isJidUser(jid)) {
                         continue;
                     }
 
@@ -829,7 +726,7 @@ class ConcurrentStore extends EventEmitter {
         }
 
         if (this.hasValidData()) {
-            await this.writeToFile();
+            await this.writeToMySQL(); 
         }
 
         this.removeAllListeners();
@@ -893,7 +790,7 @@ class ConcurrentStore extends EventEmitter {
         }
         return [];
     }
-    
+
     async loadMessages(jid, messageId = null, options = {}) {
         const {
             limit = 50,
@@ -939,9 +836,9 @@ class ConcurrentStore extends EventEmitter {
     }
 }
 
-function makeInMemoryStore(options = {}) {
+function makeMySQLStore(options = {}) {
     return new ConcurrentStore(options);
 }
 
-export default makeInMemoryStore;
+export default makeMySQLStore;
 export { ConcurrentStore };
