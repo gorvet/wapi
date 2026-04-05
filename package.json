@@ -20,21 +20,20 @@
         "node": ">=18.16.0"
     },
     "dependencies": {
-        "baileys": "^6.7.18",
-        "axios": "^1.8.4",
+        "baileys": "7.0.0-rc.6",
+        "axios": "^1.13.2",
         "cors": "^2.8.5",
-        "dotenv": "^16.5.0",
-        "express": "^4.21.2",
-        "express-validator": "^7.2.1",
-        "mysql2": "^3.12.0",
+        "dotenv": "^17.2.3",
+        "express": "^5.1.0",
+        "express-validator": "^7.3.0",
         "node-cache": "^5.1.2",
         "node-cleanup": "^2.1.2",
-        "pino": "^9.6.0",
+        "pino": "^10.1.0",
         "qrcode": "^1.5.4"
     },
     "devDependencies": {
-        "eslint": "^8.57.1",
-        "eslint-plugin-prettier": "^5.2.6",
-        "prettier": "^3.5.3"
+        "eslint": "^9.39.1",
+        "eslint-plugin-prettier": "^5.5.4",
+        "prettier": "^3.6.2"
     }
 }

@@ -1,9 +1,8 @@
 import { rmSync, readdir, existsSync } from 'fs'
 import { join } from 'path'
 import pino from 'pino'
-import makeWASocket, {
+import makeWASocketModule, {
     useMultiFileAuthState,
-    makeInMemoryStore,
     makeCacheableSignalKeyStore,
     DisconnectReason,
     delay,
@@ -11,9 +10,11 @@ import makeWASocket, {
     getAggregateVotesInPollMessage,
     fetchLatestBaileysVersion,
     WAMessageStatus,
-} from '@whiskeysockets/baileys'
+} from 'baileys'
 
-import proto from '@whiskeysockets/baileys'
+import proto from 'baileys'
+
+import makeInMemoryStore from './store/memory-store.js'
 
 import { toDataURL } from 'qrcode'
 import __dirname from './dirname.js'
@@ -23,7 +24,10 @@ import axios from 'axios'
 import NodeCache from 'node-cache'
 
 import https from 'https';
-import { readFromDatabase, writeToDatabase,deleteFromDatabase} from './database.js';
+
+import MySQLStorage from './mysqlstoraje/mysqlStorage.js';
+import useDBAuthState from './mysqlstoraje/useDBAuthState.js';
+
 
 const msgRetryCounterCache = new NodeCache()
 
@@ -73,16 +77,16 @@ const webhook = async (instance, type, data) => {
             .post(`${process.env.APP_WEBHOOK_URL}`, {
                 instance,
                 type,
-               data,
+                data,
             }, {
                  headers: {
                     'X-Webhook-Wapi': process.env.AUTHENTICATION_GLOBAL_AUTH_TOKEN
                      // Agregar cabecera personalizada
                 },
-    httpsAgent: new https.Agent({  
-        rejectUnauthorized: false
-    })
-})
+                httpsAgent: new https.Agent({  
+                rejectUnauthorized: false
+             })
+            })
             .then((success) => {
                 return success
             })
@@ -94,61 +98,81 @@ const webhook = async (instance, type, data) => {
 
 const createSession = async (sessionId, res = null, options = { usePairingCode: false, phoneNumber: '' }) => {
     const sessionFile = 'md_' + sessionId
-
     const logger = pino({ level: 'silent' })
-    const store = makeInMemoryStore({ logger })
+    /*const store = makeInMemoryStore({
+        preserveDataDuringSync: true,
+        backupBeforeSync: false,
+        incrementalSave: true,
+        maxMessagesPerChat: 150,
+        autoSaveInterval: 10000,
+        storeFile: sessionsDir(`${sessionId}_store.json`)
+    });*/
+    
+    const store = new MySQLStore()
+    const { state, saveCreds } = await useDBAuthState(sessionId);
 
-    const { state, saveCreds } = await useMultiFileAuthState(sessionsDir(sessionFile))
+   
 
-    // Fetch latest version of WA Web
+     // Fetch latest version of WA Web
     const { version, isLatest } = await fetchLatestBaileysVersion()
     console.log(`using WA v${version.join('.')}, isLatest: ${isLatest}`)
 
     // Load store
     //store?.readFromFile(sessionsDir(`${sessionId}_store.json`))
 
-      // Load store
-     const getSessionData = async (sessionId) => {
+    const getDatas = async (sessionId) => {
     try { 
-        let sessionData = await readFromDatabase(sessionId);
-         
-        store.chats=sessionData.chats
-         store.contacts=sessionData.contacts
-          store.messages=sessionData.messages
-           store.labels=sessionData.labels
-           store.labelAssociations=sessionData.labelAssociations
-         
+        const sessionData = await MySQLStorage.getUserData(sessionId);
+       if (!sessionData) {
 
+    console.error('getUserData no retornó datos válidos:', sessionData);
+    return;
+    }   
+        store.chats=new Map(sessionData.chats)
+        store.contacts=new Map(sessionData.contacts)
+        store.messages=new Map(sessionData.messages)
+        store.labels=new Map(sessionData.labels)
+        store.labelAssociations=new Map(sessionData.labelAssociations)
+       
+       
     } catch (err) {
         // Captura el error y muestra detalles adicionales
-        //console.error('Error al leer los datos de la sesión:', err.message);
+        console.error('Error al leer los datos de usuario:', err.message);
     }
 
 };
-   await getSessionData(sessionId);
+   await getDatas(sessionId);
 
-    // Save every 10s
-    /*setInterval(() => {
-        if (existsSync(sessionsDir(sessionFile))) {
-            store?.writeToFile(sessionsDir(`${sessionId}_store.json`))
+    // Guardado periódico cada 20s con bloqueo
+let isSaving = false; // Bandera para evitar solapamientos
+
+setInterval(async () => {
+    try {
+        if (isSaving) {
+            console.log('El guardado anterior aún está en proceso. Esperando...');
+            return;
 
         }
-    }, 10000)*/
-
-    setInterval(async () => {
-    try {
-       
-            await writeToDatabase(sessionId, store);  // Llamamos a la función para guardar los datos en la base de datos
-       
-    } catch (err) {
-        console.error('Error al guardar los datos en la base de datos:', err);
+        //console.log(store)
+        if (store) {
+            isSaving = true; // Bloquea nuevas ejecuciones mientras se guarda
+            console.log('Iniciando guardado de datos para la sesión:', sessionId);
+            await MySQLStorage.setUserData(sessionId, store);
+        }
+    } catch (error) {
+        console.error('Error durante el guardado periódico:', error);
+    } finally {
+        isSaving = false; // Libera la bandera
     }
 }, 10000);
+          
+    // Make both Node and Bun compatible
+    const makeWASocket = makeWASocketModule.default ?? makeWASocketModule;
 
     /**
-     * @type {import('@whiskeysockets/baileys').AnyWASocket}
+     * @type {import('baileys').AnyWASocket}
      */
-    const wa = makeWASocket.default({
+    const wa = makeWASocket({
         version,
         printQRInTerminal: false,
         mobile: false,
@@ -159,7 +183,8 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
         logger,
         msgRetryCounterCache,
         generateHighQualityLinkPreview: true,
-        browser: ['Botzy', 'Chat Bots para todos', '20.0.04'],
+
+        //browser: ['Botzy', 'Chrome', '20.0.04'],
         getMessage,
     })
     store?.bind(wa.ev)
@@ -208,7 +233,7 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
 
     // Automatically read incoming messages, uncomment below codes to enable this behaviour
     wa.ev.on('messages.upsert', async (m) => {
-        const messages = m.messages.filter((m) => {
+        const messages = m.messages.filter((m) => {           
             return m.key.fromMe === false
         })
         if (messages.length > 0) {
@@ -322,7 +347,7 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
     })
 
     wa.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update
+        const { connection, lastDisconnect, qr } = update
         const statusCode = lastDisconnect?.error?.output?.statusCode
 
         callWebhook(sessionId, 'CONNECTION_UPDATE', update)
@@ -348,15 +373,13 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
             )
         }
 
-        if (update.qr) {
+        if (qr) {
             if (res && !res.headersSent) {
                 callWebhook(sessionId, 'QRCODE_UPDATED', update)
 
                 try {
-                    const qr = await toDataURL(update.qr)
-
-                    response(res, 200, true, 'QR code received, please scan the QR code.', { qr })
-
+                    const qrcode = await toDataURL(qr)
+                    response(res, 200, true, 'QR code received, please scan the QR code.', { qrcode })
                     return
                 } catch {
                     response(res, 500, false, 'Unable to create QR code.')
@@ -410,7 +433,7 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
 
     async function getMessage(key) {
         if (store) {
-            const msg = await store.loadMessage(key.remoteJid, key.id)
+            const msg = await store.loadMessages(key.remoteJid, key.id)
             return msg?.message || undefined
         }
 
@@ -420,7 +443,7 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
 }
 
 /**
- * @returns {(import('@whiskeysockets/baileys').AnyWASocket|null)}
+ * @returns {(import('baileys').AnyWASocket|null)}
  */
 const getSession = (sessionId) => {
     return sessions.get(sessionId) ?? null
@@ -430,39 +453,29 @@ const getListSessions = () => {
     return [...sessions.keys()]
 }
 
-const deleteSession = (sessionId) => {
-    const sessionFile = 'md_' + sessionId
-    const storeFile = `${sessionId}_store.json`
-    const rmOptions = { force: true, recursive: true }
-    //**/
-    rmSync(sessionsDir(sessionFile), rmOptions)
-    rmSync(sessionsDir(storeFile), rmOptions)
-
-    sessions.delete(sessionId)
-    retries.delete(sessionId)
-
-
-    const handleDeleteSession = async (sessionId) => {
+const deleteSession = async (sessionId) => {
+        
+    // Eliminar datos de la base de datos
     try {
-    const result = await deleteFromDatabase(sessionId);
-   } catch (error) {
-    console.error('Error:', error.message);
-  }
+        sessions.delete(sessionId);
+        retries.delete(sessionId);
+        await MySQLStorage.deleteCredsData(sessionId);
+        console.log('Fila eliminada con éxito de la base de datos.');
+    } catch (error) {
+        console.error('Error al eliminar la fila de la base de datos:', error);
+    }
+    // Eliminar referencias en memoria
 };
 
-handleDeleteSession(sessionId);
-}
 
 const getChatList = (sessionId, isGroup = false) => {
     const filter = isGroup ? '@g.us' : '@s.whatsapp.net'
-
-    return getSession(sessionId).store.chats.filter((chat) => {
-        return chat.id.endsWith(filter)
-    })
+    const chats = getSession(sessionId).store.chats
+    return [...chats.values()].filter(chat => chat.id.endsWith(filter))
 }
 
 /**
- * @param {import('@whiskeysockets/baileys').AnyWASocket} session
+ * @param {import('baileys').AnyWASocket} session
  */
 const isExists = async (session, jid, isGroup = false) => {
     try {
@@ -483,19 +496,19 @@ const isExists = async (session, jid, isGroup = false) => {
 }
 
 /**
- * @param {import('@whiskeysockets/baileys').AnyWASocket} session
+ * @param {import('baileys').AnyWASocket} session
  */
-const sendMessage = async (session, receiver, message, delayMs = 1000) => {
+const sendMessage = async (session, receiver, message, options = {}, delayMs = 1000) => {
     try {
         await delay(parseInt(delayMs))
-        return await session.sendMessage(receiver, message)
+        return await session.sendMessage(receiver, message, options)
     } catch {
         return Promise.reject(null) // eslint-disable-line prefer-promise-reject-errors
     }
 }
 
 /**
- * @param {import('@whiskeysockets/baileys').AnyWASocket} session
+ * @param {import('baileys').AnyWASocket} session
  */
 const updateProfileStatus = async (session, status) => {
     try {
@@ -549,13 +562,14 @@ const formatGroup = (group) => {
     return (formatted += '@g.us')
 }
 
-const cleanup = () => {
+const cleanup = () => { //async
     console.log('Running cleanup before exit.')
 
     sessions.forEach((session, sessionId) => {
         //session.store.writeToFile(sessionsDir(`${sessionId}_store.json`))
-        let sessionData  =  session.store
-         writeToDatabase(sessionId, sessionData);
+         let sessionData  =  session.store
+         //console.log(sessionData)
+         MySQLStorage.setUserData(sessionId, sessionData);
     })
 }
 
@@ -610,7 +624,7 @@ const readMessage = async (session, keys) => {
 
 const getStoreMessage = async (session, messageId, remoteJid) => {
     try {
-        return await session.store.loadMessage(remoteJid, messageId)
+        return await session.store.loadMessages(remoteJid, messageId)
     } catch {
         // eslint-disable-next-line prefer-promise-reject-errors
         return Promise.reject(null)
@@ -652,22 +666,23 @@ const convertToBase64 = (arrayBytes) => {
 }
 
 const init = () => {
-    readdir(sessionsDir(), (err, files) => {
-        if (err) {
-            throw err
+
+    MySQLStorage.getAllSessionIds()
+    .then(sessionIds => {
+        if (!sessionIds || sessionIds.length === 0) {
+            console.log('No sessions found to recover.');
+            return;
         }
 
-        for (const file of files) {
-            if ((!file.startsWith('md_') && !file.startsWith('legacy_')) || file.endsWith('_store')) {
-                continue
-            }
-
-            const filename = file.replace('.json', '')
-            const sessionId = filename.substring(3)
-            console.log('Recovering session: ' + sessionId)
-            createSession(sessionId)
+        for (const sessionId of sessionIds) {
+            console.log('Recovering session: ' + sessionId);
+            createSession(sessionId);
         }
     })
+    .catch(error => {
+        console.error('Error recovering sessions:', error);
+    });
+     
 }
 
 export {

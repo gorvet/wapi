@@ -16,8 +16,8 @@ router.use('/chats', chatsRoute)
 router.use('/groups', groupsRoute)
 router.use('/misc', miscRoute)
 
-router.all('*', (req, res) => {
-    response(res, 404, false, 'The requested url cannot be found.')
+router.use((req, res) => {
+  response(res, 404, false, 'The requested url cannot be found.')
 })
 
 export default router

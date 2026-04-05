@@ -45,7 +45,7 @@ const del = async (req, res) => {
         session.ws.close()
     } catch {
     } finally {
-        deleteSession(id)
+        await deleteSession(id)
     }
 
     response(res, 200, true, 'The session has been successfully deleted.')

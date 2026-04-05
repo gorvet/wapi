@@ -1,8 +1,6 @@
-import { rmSync, readdir, existsSync } from 'fs'
 import { join } from 'path'
 import pino from 'pino'
 import makeWASocketModule, {
-    useMultiFileAuthState,
     makeCacheableSignalKeyStore,
     DisconnectReason,
     delay,
@@ -14,8 +12,6 @@ import makeWASocketModule, {
 
 import proto from 'baileys'
 
-import makeInMemoryStore from './store/memory-store.js'
-
 import { toDataURL } from 'qrcode'
 import __dirname from './dirname.js'
 import response from './response.js'
@@ -25,16 +21,28 @@ import NodeCache from 'node-cache'
 
 import https from 'https';
 
-import MySQLStorage from './mysqlstoraje/mysqlStorage.js';
-import useDBAuthState from './mysqlstoraje/useDBAuthState.js';
-
+import {
+    createSessionPersistence,
+    deleteSessionPersistence,
+    getPersistenceInfo,
+    listRecoverableSessionIds,
+    markStoreDirty,
+} from './persistence/index.js';
 
 const msgRetryCounterCache = new NodeCache()
 
 const sessions = new Map()
 const retries = new Map()
+const creatingSessions = new Set()
 
-const APP_WEBHOOK_ALLOWED_EVENTS = process.env.APP_WEBHOOK_ALLOWED_EVENTS.split(',')
+const { driver: SESSION_STORAGE_DRIVER, encryptionEnabled: DB_ENCRYPTION_ENABLED } = getPersistenceInfo()
+
+console.log(`[STORAGE] Driver activo: ${SESSION_STORAGE_DRIVER}`)
+if (DB_ENCRYPTION_ENABLED) {
+    console.log('[STORAGE] Cifrado de persistencia MySQL: ACTIVO')
+}
+
+const APP_WEBHOOK_ALLOWED_EVENTS = (process.env.APP_WEBHOOK_ALLOWED_EVENTS ?? 'ALL').split(',')
 
 const sessionsDir = (sessionId = '') => {
     return join(__dirname, 'sessions', sessionId ? sessionId : '')
@@ -96,85 +104,68 @@ const webhook = async (instance, type, data) => {
     }
 }
 
+const closeSessionResources = async (
+    sessionId,
+    options = { deleteAuth: false, clearRetry: true },
+) => {
+    const { deleteAuth = false, clearRetry = true } = options
+    const session = sessions.get(sessionId)
+
+    sessions.delete(sessionId)
+    if (clearRetry) {
+        retries.delete(sessionId)
+    }
+
+    if (session?.store?.cleanup) {
+        try {
+            await session.store.cleanup()
+        } catch (error) {
+            console.error(`Error cleaning store for ${sessionId}:`, error?.message || error)
+        }
+    }
+
+    try {
+        session?.ev?.removeAllListeners?.()
+    } catch {
+    }
+
+    try {
+        session?.end?.()
+    } catch {
+    }
+
+    try {
+        session?.ws?.close?.()
+    } catch {
+    }
+
+    if (deleteAuth) {
+        try {
+            await deleteSessionPersistence(sessionId, sessionsDir)
+        } catch (error) {
+            console.error('Error eliminando persistencia de sesion:', error)
+        }
+    }
+}
 const createSession = async (sessionId, res = null, options = { usePairingCode: false, phoneNumber: '' }) => {
-    const sessionFile = 'md_' + sessionId
+    if (creatingSessions.has(sessionId)) {
+        return
+    }
+
+    creatingSessions.add(sessionId)
+    try {
+        if (isSessionExists(sessionId)) {
+            await closeSessionResources(sessionId, { deleteAuth: false, clearRetry: false })
+        }
+
     const logger = pino({ level: 'silent' })
-    const store = makeInMemoryStore({
-        preserveDataDuringSync: true,
-        backupBeforeSync: false,
-        incrementalSave: true,
-        maxMessagesPerChat: 150,
-        autoSaveInterval: 10000,
-        storeFile: sessionsDir(`${sessionId}_store.json`)
-    });
-    const { state, saveCreds } = await useDBAuthState(sessionId);
 
+    const { store, state, saveCreds } = await createSessionPersistence(sessionId, sessionsDir)
 
-
-     // Fetch latest version of WA Web
+    // Fetch latest version of WA Web
     const { version, isLatest } = await fetchLatestBaileysVersion()
     console.log(`using WA v${version.join('.')}, isLatest: ${isLatest}`)
 
-    // Load store
-    //store?.readFromFile(sessionsDir(`${sessionId}_store.json`))
-
-    const getDatas = async (sessionId) => {
-    try { 
-        const sessionData = await MySQLStorage.getUserData(sessionId);
-       if (!sessionData) {
-
-    console.error('getUserData no retornó datos válidos:', sessionData);
-    return;
-    }   
-        store.chats=new Map(sessionData.chats)
-        store.contacts=new Map(sessionData.contacts)
-        store.messages=new Map(sessionData.messages)
-        store.labels=new Map(sessionData.labels)
-        store.labelAssociations=new Map(sessionData.labelAssociations)
-       
-       
-    } catch (err) {
-        // Captura el error y muestra detalles adicionales
-        console.error('Error al leer los datos de usuario:', err.message);
-    }
-
-};
-   await getDatas(sessionId);
-
-    // Guardado periódico cada 20s con bloqueo
-let isSaving = false; // Bandera para evitar solapamientos
-
-setInterval(async () => {
-    try {
-        if (isSaving) {
-            console.log('El guardado anterior aún está en proceso. Esperando...');
-            return;
-
-        }
-        //console.log(store)
-        if (store) {
-            isSaving = true; // Bloquea nuevas ejecuciones mientras se guarda
-            console.log('Iniciando guardado de datos para la sesión:', sessionId);
-            await MySQLStorage.setUserData(sessionId, store);
-        }
-    } catch (error) {
-        console.error('Error durante el guardado periódico:', error);
-    } finally {
-        isSaving = false; // Libera la bandera
-    }
-}, 60000);
-
-        if (store) {
-            isSaving = true; // Bloquea nuevas ejecuciones mientras se guarda
-            //console.log('Iniciando guardado de datos para la sesión:', sessionId);
-            await MySQLStorage.setUserData(sessionId, store);
-        }
-    } catch (error) {
-        console.error('Error durante el guardado periódico:', error);
-    } finally {
-        isSaving = false; // Libera la bandera
-    }
-}, 20000);
     // Make both Node and Bun compatible
     const makeWASocket = makeWASocketModule.default ?? makeWASocketModule;
 
@@ -192,12 +183,9 @@ setInterval(async () => {
         logger,
         msgRetryCounterCache,
         generateHighQualityLinkPreview: true,
-
-        //browser: ['Botzy', 'Chrome', '20.0.04'],
         getMessage,
     })
     store?.bind(wa.ev)
-
     sessions.set(sessionId, { ...wa, store })
 
     if (options.usePairingCode && !wa.authState.creds.registered) {
@@ -242,7 +230,7 @@ setInterval(async () => {
 
     // Automatically read incoming messages, uncomment below codes to enable this behaviour
     wa.ev.on('messages.upsert', async (m) => {
-        const messages = m.messages.filter((m) => {           
+        const messages = m.messages.filter((m) => {
             return m.key.fromMe === false
         })
         if (messages.length > 0) {
@@ -363,6 +351,18 @@ setInterval(async () => {
 
         if (connection === 'open') {
             retries.delete(sessionId)
+
+            let removedContacts = 0
+            for (const [jid, contacto] of store.contacts.entries()) {
+                if (!(contacto?.name || contacto?.verifiedName) || jid.includes('@g.us') || jid.includes('@lid')) {
+                    store.contacts.delete(jid)
+                    removedContacts++
+                }
+            }
+
+            if (removedContacts > 0) {
+                markStoreDirty(store)
+            }
         }
 
         if (connection === 'close') {
@@ -371,9 +371,10 @@ setInterval(async () => {
                     response(res, 500, false, 'Unable to create session.')
                 }
 
-                return deleteSession(sessionId)
+                return await deleteSession(sessionId)
             }
 
+            await closeSessionResources(sessionId, { deleteAuth: false, clearRetry: false })
             setTimeout(
                 () => {
                     createSession(sessionId, res)
@@ -399,7 +400,7 @@ setInterval(async () => {
                 await wa.logout()
             } catch {
             } finally {
-                deleteSession(sessionId)
+                await deleteSession(sessionId)
             }
         }
     })
@@ -449,6 +450,9 @@ setInterval(async () => {
         // Only if store is present
         return proto.Message.fromObject({})
     }
+    } finally {
+        creatingSessions.delete(sessionId)
+    }
 }
 
 /**
@@ -463,19 +467,16 @@ const getListSessions = () => {
 }
 
 const deleteSession = async (sessionId) => {
-        
-    // Eliminar datos de la base de datos
-    try {
-        sessions.delete(sessionId);
-        retries.delete(sessionId);
-        await MySQLStorage.deleteCredsData(sessionId);
-        console.log('Fila eliminada con éxito de la base de datos.');
-    } catch (error) {
-        console.error('Error al eliminar la fila de la base de datos:', error);
-    }
-    // Eliminar referencias en memoria
-};
+   /* const sessionFile = 'md_' + sessionId
+    const storeFile = `${sessionId}_store.json`
+    const rmOptions = { force: true, recursive: true }
 
+    rmSync(sessionsDir(sessionFile), rmOptions)
+    rmSync(sessionsDir(storeFile), rmOptions)*/
+    await closeSessionResources(sessionId, { deleteAuth: true, clearRetry: true })
+
+    /*aqui colocar el delet section*/
+}
 
 const getChatList = (sessionId, isGroup = false) => {
     const filter = isGroup ? '@g.us' : '@s.whatsapp.net'
@@ -511,8 +512,8 @@ const sendMessage = async (session, receiver, message, options = {}, delayMs = 1
     try {
         await delay(parseInt(delayMs))
         return await session.sendMessage(receiver, message, options)
-    } catch {
-        return Promise.reject(null) // eslint-disable-line prefer-promise-reject-errors
+    } catch (err) {
+        return Promise.reject(err) // eslint-disable-line prefer-promise-reject-errors
     }
 }
 
@@ -571,14 +572,13 @@ const formatGroup = (group) => {
     return (formatted += '@g.us')
 }
 
-const cleanup = () => { //async
+const cleanup = () => {
     console.log('Running cleanup before exit.')
 
     sessions.forEach((session, sessionId) => {
-        //session.store.writeToFile(sessionsDir(`${sessionId}_store.json`))
-         let sessionData  =  session.store
-         //console.log(sessionData)
-         MySQLStorage.setUserData(sessionId, sessionData);
+        closeSessionResources(sessionId, { deleteAuth: false, clearRetry: false }).catch((error) => {
+            console.error(`Error on cleanup for ${sessionId}:`, error?.message || error)
+        })
     })
 }
 
@@ -674,24 +674,40 @@ const convertToBase64 = (arrayBytes) => {
     return Buffer.from(byteArray).toString('base64')
 }
 
-const init = () => {
-
-    MySQLStorage.getAllSessionIds()
-    .then(sessionIds => {
-        if (!sessionIds || sessionIds.length === 0) {
-            console.log('No sessions found to recover.');
-            return;
+/*const init = () => {
+    readdir(sessionsDir(), (err, files) => {
+        if (err) {
+            throw err
         }
 
-        for (const sessionId of sessionIds) {
-            console.log('Recovering session: ' + sessionId);
-            createSession(sessionId);
+        for (const file of files) {
+            if ((!file.startsWith('md_') && !file.startsWith('legacy_')) || file.endsWith('_store')) {
+                continue
+            }
+
+            const filename = file.replace('.json', '')
+            const sessionId = filename.substring(3)
+            console.log('Recovering session: ' + sessionId)
+            createSession(sessionId)
         }
     })
-    .catch(error => {
-        console.error('Error recovering sessions:', error);
-    });
-     
+}*/
+const init = () => {
+    listRecoverableSessionIds(sessionsDir)
+        .then((sessionIds) => {
+            if (!sessionIds || sessionIds.length === 0) {
+                console.log('No sessions found to recover.')
+                return
+            }
+
+            for (const sessionId of sessionIds) {
+                console.log('Recovering session: ' + sessionId)
+                createSession(sessionId)
+            }
+        })
+        .catch((error) => {
+            console.error('Error recovering sessions:', error)
+        })
 }
 
 export {
