@@ -1,4 +1,5 @@
 import mysql from 'mysql2/promise';
+import { decryptText, encryptText } from '../persistence/crypto.js';
 
 // --- Mutex en memoria por session_id (serializa escrituras dentro del proceso) ---
 const _memQueues = new Map();
@@ -87,7 +88,8 @@ async setCredsData(sessionId, dataString, col /* 'creds' | 'session_keys' */) {
         VALUES (?, ?)
         ON DUPLICATE KEY UPDATE ${col} = VALUES(${col})
       `;
-      await conn.query(sql, [sessionId, dataString]);
+      const payload = encryptText(dataString);
+      await conn.query(sql, [sessionId, payload]);
 
     } finally {
       // Suelta lock y cierra conexión aunque falle el query
@@ -118,7 +120,7 @@ async setCredsData(sessionId, dataString, col /* 'creds' | 'session_keys' */) {
             const [rows] = await this.pool.query(query, [sessionId]);
             if (rows.length > 0) {
                 const value = rows[0][col];
-                return value
+                return decryptText(value)
             }
             return null; // Si no hay filas para este `sessionId`
         } catch (error) {

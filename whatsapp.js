@@ -1,8 +1,6 @@
-import { rmSync, readdir, existsSync } from 'fs'
 import { join } from 'path'
 import pino from 'pino'
 import makeWASocketModule, {
-    useMultiFileAuthState,
     makeCacheableSignalKeyStore,
     DisconnectReason,
     delay,
@@ -14,8 +12,6 @@ import makeWASocketModule, {
 
 import proto from 'baileys'
 
-import makeInMemoryStore from './store/memory-store.js'
-
 import { toDataURL } from 'qrcode'
 import __dirname from './dirname.js'
 import response from './response.js'
@@ -25,10 +21,13 @@ import NodeCache from 'node-cache'
 
 import https from 'https';
 
-import makeMySQLStore from './store/mysql-store.js';
-import MySQLAuthStore from './useDBAuthState/mysql-auth-store.js';
-
-import useDBAuthState from './useDBAuthState/useDBAuthState.js';
+import {
+    createSessionPersistence,
+    deleteSessionPersistence,
+    getPersistenceInfo,
+    listRecoverableSessionIds,
+    markStoreDirty,
+} from './persistence/index.js';
 
 const msgRetryCounterCache = new NodeCache()
 
@@ -36,40 +35,17 @@ const sessions = new Map()
 const retries = new Map()
 const creatingSessions = new Set()
 
-const SESSION_STORAGE_DRIVER_RAW = (process.env.SESSION_STORAGE_DRIVER ?? 'mysql').toLowerCase()
-const SESSION_STORAGE_DRIVER = ['mysql', 'json'].includes(SESSION_STORAGE_DRIVER_RAW)
-    ? SESSION_STORAGE_DRIVER_RAW
-    : 'mysql'
-const IS_MYSQL_STORAGE = SESSION_STORAGE_DRIVER === 'mysql'
-const authStore = IS_MYSQL_STORAGE ? new MySQLAuthStore() : null
+const { driver: SESSION_STORAGE_DRIVER, encryptionEnabled: DB_ENCRYPTION_ENABLED } = getPersistenceInfo()
 
-if (SESSION_STORAGE_DRIVER_RAW !== SESSION_STORAGE_DRIVER) {
-    console.warn(
-        `[STORAGE] SESSION_STORAGE_DRIVER invalido: "${SESSION_STORAGE_DRIVER_RAW}". Se usara "${SESSION_STORAGE_DRIVER}".`,
-    )
+console.log(`[STORAGE] Driver activo: ${SESSION_STORAGE_DRIVER}`)
+if (DB_ENCRYPTION_ENABLED) {
+    console.log('[STORAGE] Cifrado de persistencia MySQL: ACTIVO')
 }
 
 const APP_WEBHOOK_ALLOWED_EVENTS = (process.env.APP_WEBHOOK_ALLOWED_EVENTS ?? 'ALL').split(',')
 
 const sessionsDir = (sessionId = '') => {
     return join(__dirname, 'sessions', sessionId ? sessionId : '')
-}
-
-const removeLocalSessionFiles = (sessionId) => {
-    const sessionFile = 'md_' + sessionId
-    const storeFile = `${sessionId}_store.json`
-    const rmOptions = { force: true, recursive: true }
-
-    const authPath = sessionsDir(sessionFile)
-    const storePath = sessionsDir(storeFile)
-
-    if (existsSync(authPath)) {
-        rmSync(authPath, rmOptions)
-    }
-
-    if (existsSync(storePath)) {
-        rmSync(storePath, rmOptions)
-    }
 }
 
 const isSessionExists = (sessionId) => {
@@ -164,19 +140,10 @@ const closeSessionResources = async (
     }
 
     if (deleteAuth) {
-        if (IS_MYSQL_STORAGE && authStore) {
-            try {
-                await authStore.deleteCredsData(sessionId)
-                console.log('Fila eliminada con exito de la base de datos.')
-            } catch (error) {
-                console.error('Error al eliminar la fila de la base de datos:', error)
-            }
-        } else {
-            try {
-                removeLocalSessionFiles(sessionId)
-            } catch (error) {
-                console.error('Error al eliminar archivos de sesion local:', error)
-            }
+        try {
+            await deleteSessionPersistence(sessionId, sessionsDir)
+        } catch (error) {
+            console.error('Error eliminando persistencia de sesion:', error)
         }
     }
 }
@@ -191,51 +158,13 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
             await closeSessionResources(sessionId, { deleteAuth: false, clearRetry: false })
         }
 
-    const sessionFile = 'md_' + sessionId
-
     const logger = pino({ level: 'silent' })
 
-    /*const store = makeInMemoryStore({
-        preserveDataDuringSync: true,
-        backupBeforeSync: false,
-        incrementalSave: true,
-        maxMessagesPerChat: 150,
-        autoSaveInterval: 10000,
-        storeFile: sessionsDir(`${sessionId}_store.json`)
-    });*/
-
-    const commonStoreOptions = {
-        preserveDataDuringSync: true,
-        backupBeforeSync: false,
-        incrementalSave: true,
-        maxMessagesPerChat: 150,
-        autoSaveInterval: 10000,
-    }
-
-    const store = IS_MYSQL_STORAGE
-        ? makeMySQLStore({
-            ...commonStoreOptions,
-            sessionId,
-        })
-        : makeInMemoryStore({
-            ...commonStoreOptions,
-            storeFile: sessionsDir(`${sessionId}_store.json`),
-        })
-
-    const { state, saveCreds } = IS_MYSQL_STORAGE
-        ? await useDBAuthState(sessionId)
-        : await useMultiFileAuthState(sessionsDir(sessionFile))
+    const { store, state, saveCreds } = await createSessionPersistence(sessionId, sessionsDir)
 
     // Fetch latest version of WA Web
     const { version, isLatest } = await fetchLatestBaileysVersion()
     console.log(`using WA v${version.join('.')}, isLatest: ${isLatest}`)
-
-    // Load store
-    if (IS_MYSQL_STORAGE) {
-        await store?.readFromMySQL(sessionId)
-    } else {
-        store?.readFromFile(sessionsDir(`${sessionId}_store.json`))
-    }
 
     // Make both Node and Bun compatible
     const makeWASocket = makeWASocketModule.default ?? makeWASocketModule;
@@ -432,7 +361,7 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
             }
 
             if (removedContacts > 0) {
-                store.markDirty?.()
+                markStoreDirty(store)
             }
         }
 
@@ -764,47 +693,21 @@ const convertToBase64 = (arrayBytes) => {
     })
 }*/
 const init = () => {
-    if (IS_MYSQL_STORAGE && authStore) {
-        authStore.getAllSessionIds()
-            .then((sessionIds) => {
-                if (!sessionIds || sessionIds.length === 0) {
-                    console.log('No sessions found to recover.')
-                    return
-                }
-
-                for (const sessionId of sessionIds) {
-                    console.log('Recovering session: ' + sessionId)
-                    createSession(sessionId)
-                }
-            })
-            .catch((error) => {
-                console.error('Error recovering sessions:', error)
-            })
-        return
-    }
-
-    if (!existsSync(sessionsDir())) {
-        console.log('No local sessions directory found to recover.')
-        return
-    }
-
-    readdir(sessionsDir(), (err, files) => {
-        if (err) {
-            console.error('Error recovering local sessions:', err)
-            return
-        }
-
-        for (const file of files) {
-            if ((!file.startsWith('md_') && !file.startsWith('legacy_')) || file.endsWith('_store')) {
-                continue
+    listRecoverableSessionIds(sessionsDir)
+        .then((sessionIds) => {
+            if (!sessionIds || sessionIds.length === 0) {
+                console.log('No sessions found to recover.')
+                return
             }
 
-            const filename = file.replace('.json', '')
-            const sessionId = filename.substring(3)
-            console.log('Recovering session: ' + sessionId)
-            createSession(sessionId)
-        }
-    })
+            for (const sessionId of sessionIds) {
+                console.log('Recovering session: ' + sessionId)
+                createSession(sessionId)
+            }
+        })
+        .catch((error) => {
+            console.error('Error recovering sessions:', error)
+        })
 }
 
 export {

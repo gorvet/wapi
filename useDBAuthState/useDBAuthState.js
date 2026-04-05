@@ -1,12 +1,12 @@
 import { WAProto as proto, initAuthCreds, BufferJSON } from 'baileys';
 import MySQLAuthStore from './mysql-auth-store.js';
 
-const storage = new MySQLAuthStore();
-
-const useDBAuthState = async (sessionId) => {
+const useDBAuthState = async (sessionId, options = {}) => {
     if (!sessionId) {
         throw new Error('sessionId is required to manage authentication state.');
     }
+
+    const storage = options.storage ?? new MySQLAuthStore();
 
     // Cargar credenciales iniciales o generar nuevas si no existen
     const dataRaw = await storage.getCredsData(sessionId, 'creds') || JSON.stringify((0, initAuthCreds)());

@@ -1,6 +1,7 @@
 import { jidNormalizedUser, toNumber, isJidUser } from 'baileys';
 import { EventEmitter } from 'events';
 import mysql from 'mysql2/promise';
+import { decryptText, encryptText } from '../persistence/crypto.js';
 
 const dbPoolLimit = Number.parseInt(process.env.DB_POOL_LIMIT ?? '30', 10);
 const sharedPool = mysql.createPool({
@@ -244,6 +245,10 @@ class ConcurrentStore extends EventEmitter {
             const chats = JSON.stringify(data.chats || []);
             const contacts = JSON.stringify(data.contacts || []);
             const messages = JSON.stringify(data.messages || {});
+            const dbFstore = encryptText(fstore);
+            const dbChats = encryptText(chats);
+            const dbContacts = encryptText(contacts);
+            const dbMessages = encryptText(messages);
             console.log("insertando store para" + sessionId)
             //console.log(fstore)
 
@@ -267,7 +272,7 @@ try {
        chats = VALUES(chats),
        contacts = VALUES(contacts),
        messages = VALUES(messages)`,
-    [sessionId, fstore, chats, contacts, messages]
+    [sessionId, dbFstore, dbChats, dbContacts, dbMessages]
   );
 } finally {
   try { await conn.query('DO RELEASE_LOCK(?)', [`wa_sessions:${sessionId}`]); } catch {}
@@ -317,7 +322,7 @@ try {
             'SELECT fstore FROM wa_sessions WHERE session_id = ? LIMIT 1',
             [sessionId]
             );  
-            const raw = rows?.[0]?.fstore;
+            const raw = decryptText(rows?.[0]?.fstore);
 
             // Verifica que exista y no esté vacío o corrupto
             if (!raw || typeof raw !== 'string' || raw.trim().length < 10) {

@@ -44,8 +44,17 @@ DB_PASWD=""
 DB_NAME=baileys_api
 DB_POOL_LIMIT=30
 DB_LOCK_WAIT_SECONDS=2
+DB_ENCRYPTION_ENABLED=false
+DB_ENCRYPTION_KEY=
 
 ```
+
+### Persistence Drivers
+
+- `SESSION_STORAGE_DRIVER=json`: usa almacenamiento local nativo (`sessions/` + `*_store.json`).
+- `SESSION_STORAGE_DRIVER=mysql`: usa la tabla `wa_sessions` con el módulo MySQL.
+- `DB_ENCRYPTION_ENABLED=true`: cifra los payloads de MySQL (`creds`, `session_keys`, `fstore`, `chats`, `contacts`, `messages`) con AES-256-GCM.
+- `DB_ENCRYPTION_KEY`: clave de cifrado recomendada. Si no se define, se usa `AUTHENTICATION_GLOBAL_AUTH_TOKEN`.
 
 ## Usage
 
