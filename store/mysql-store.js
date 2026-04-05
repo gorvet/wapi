@@ -2,15 +2,28 @@ import { jidNormalizedUser, toNumber, isJidUser } from 'baileys';
 import { EventEmitter } from 'events';
 import mysql from 'mysql2/promise';
 
+const dbPoolLimit = Number.parseInt(process.env.DB_POOL_LIMIT ?? '30', 10);
+const sharedPool = mysql.createPool({
+    host: 'localhost',
+    user: process.env.DB_USER,
+    password: process.env.DB_PASWD,
+    database: process.env.DB_NAME,
+    waitForConnections: true,
+    connectionLimit: Number.isNaN(dbPoolLimit) ? 30 : dbPoolLimit,
+    queueLimit: 0,
+    connectTimeout: 15000,
+});
+
 class ConcurrentStore extends EventEmitter {
     constructor(options = {}) {
         super();
 
         this.config = {
-            maxMessagesPerChat: options.maxMessagesPerChat || 5000,
-            autoSaveInterval: options.autoSaveInterval || 60000,
-            batchSize: options.batchSize || 500,
-            sessionId: options.sessionId || "",//?,
+            maxMessagesPerChat: options.maxMessagesPerChat ?? 5000,
+            autoSaveInterval: options.autoSaveInterval ?? 60000,
+            batchSize: options.batchSize ?? 500,
+            sessionId: options.sessionId ?? '',
+            minWriteInterval: options.minWriteInterval ?? 20000,
             // **New options for data preservation**
             preserveDataDuringSync: options.preserveDataDuringSync !== false, // true by default
             backupBeforeSync: options.backupBeforeSync !== false, // true by default
@@ -18,16 +31,9 @@ class ConcurrentStore extends EventEmitter {
             ...options
         };
         this.sessionId = this.config.sessionId;
-        this.pool = mysql.createPool({
-            host: 'localhost',
-            user: process.env.DB_USER,
-            password: process.env.DB_PASWD,
-            database: process.env.DB_NAME,
-            waitForConnections: true,
-            connectionLimit: 30,
-            queueLimit: 0,
-            connectTimeout: 15000,
-    });
+        this.pool = sharedPool;
+        this.closed = false;
+        this.isDirty = false;
 
         // **Main stores**
         this.chats = new Map();
@@ -66,10 +72,22 @@ class ConcurrentStore extends EventEmitter {
 
     // **Auto-save inteligente que no borra datos durante sync**
     async smartAutoSave() {
+        if (this.closed || !this.isDirty) {
+            return;
+        }
+
         // Do not save if we are in the middle of a heavy synchronization
         if (this.isProcessingHistory && this.syncStartTime &&
             (Date.now() - this.syncStartTime) < 30000) { // First 30 seconds of sync
             // console.log('⏳ Skipping auto-save during initial sync phase');
+            return;
+        }
+
+        if (
+            this.config.minWriteInterval > 0 &&
+            this.lastSuccessfulSave &&
+            (Date.now() - this.lastSuccessfulSave) < this.config.minWriteInterval
+        ) {
             return;
         }
 
@@ -136,6 +154,9 @@ class ConcurrentStore extends EventEmitter {
 
             // **Update Stats**
             this.updateStats();
+            if (newChats.length > 0 || newContacts.length > 0 || newMessages.length > 0) {
+                this.markDirty();
+            }
 
             const processingTime = Date.now() - this.syncStartTime;
             // console.log(`✅ History batch processed in ${processingTime}ms`);
@@ -177,7 +198,7 @@ class ConcurrentStore extends EventEmitter {
 
             // **Final save only if we have valid data**
             if (this.hasValidData()) {
-                await this.writeToMySQL();
+                await this.writeToMySQL({ force: true });
                 // console.log('💾 Final save completed');
             }  
 
@@ -192,12 +213,20 @@ class ConcurrentStore extends EventEmitter {
     
 
     // **Secure writing that preserves data**
-    async writeToMySQL() {
+    async writeToMySQL(options = {}) {
+        const { force = false } = options;
         const sessionId = this.sessionId;
         
+        if (this.closed) {
+            return;
+        }
 
         if (this.isWriting) {
             this.pendingWrites.add(sessionId);
+            return;
+        }
+
+        if (!force && !this.isDirty) {
             return;
         }
 
@@ -218,20 +247,39 @@ class ConcurrentStore extends EventEmitter {
             console.log("insertando store para" + sessionId)
             //console.log(fstore)
 
-            await this.pool.execute(
-                `INSERT INTO wa_sessions (session_id, fstore, chats, contacts, messages)
-                VALUES (?, ?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE 
-                fstore = VALUES(fstore),
-                chats = VALUES(chats),
-                contacts = VALUES(contacts),
-                messages = VALUES(messages)`,
-                [sessionId, fstore, chats, contacts, messages]
-            );
+             
+             const conn = await this.pool.getConnection();
+try {
+  await conn.query('SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED');
+  await conn.query('SET SESSION innodb_lock_wait_timeout = 10');
+
+  const lockKey = `wa_sessions:${sessionId}`;
+  const [rows] = await conn.query('SELECT GET_LOCK(?, 10) AS got', [lockKey]);
+  if (!rows || rows[0]?.got !== 1) {
+    throw new Error('Lock de sesión ocupado (no se obtuvo en 10s)');
+  }
+
+  await conn.execute(
+    `INSERT INTO wa_sessions (session_id, fstore, chats, contacts, messages)
+     VALUES (?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE 
+       fstore = VALUES(fstore),
+       chats = VALUES(chats),
+       contacts = VALUES(contacts),
+       messages = VALUES(messages)`,
+    [sessionId, fstore, chats, contacts, messages]
+  );
+} finally {
+  try { await conn.query('DO RELEASE_LOCK(?)', [`wa_sessions:${sessionId}`]); } catch {}
+  conn.release();
+}
+
+
             console.log("✅ Query ejecutada (o al menos no reventó)");
 
             this.stats.lastSave = new Date();
             this.lastSuccessfulSave = Date.now();
+            this.isDirty = false;
 
             this.emit('store.saved', {
                 sessionId,
@@ -249,7 +297,7 @@ class ConcurrentStore extends EventEmitter {
             if (this.pendingWrites.size > 0) {
                 const nextSessionId = this.pendingWrites.values().next().value;
                 this.pendingWrites.delete(nextSessionId);
-                setImmediate(() => this.writeToMySQL(nextSessionId));
+                setImmediate(() => this.writeToMySQL());
             }   
         }
     }
@@ -258,6 +306,10 @@ class ConcurrentStore extends EventEmitter {
  
     // **Read datas from db**
     async readFromMySQL(sessionId) {
+        if (this.closed) {
+            return;
+        }
+
         try {
             await this.acquireWriteLock('mysql');
             
@@ -288,6 +340,7 @@ class ConcurrentStore extends EventEmitter {
 
             this.stats.lastSave = new Date();
             this.hasInitialData = true;
+            this.isDirty = false;
 
             // console.log(`✅ Store cargado desde MySQL: ${this.stats.totalChats} chats, ${this.stats.totalMessages} mensajes, ${this.stats.totalContacts} contactos`);
 
@@ -490,6 +543,7 @@ class ConcurrentStore extends EventEmitter {
                     this.messages.delete(chatId);
                 }
                 this.updateStats();
+                this.markDirty();
             } catch (error) {
                 // console.error('Error processing chats.delete:', error);
             }
@@ -529,6 +583,7 @@ class ConcurrentStore extends EventEmitter {
             });
 
             this.emit('store.chat-updated', update);
+            this.markDirty();
         }
     }
 
@@ -551,6 +606,10 @@ class ConcurrentStore extends EventEmitter {
             } catch (error) {
                 console.error('Error processing contact:', contact.id, error);
             }
+        }
+
+        if (processed > 0) {
+            this.markDirty();
         }
 
         return processed;
@@ -588,6 +647,7 @@ class ConcurrentStore extends EventEmitter {
 
         this.stats.totalMessages++;
         this.stats.operations++;
+        this.markDirty();
 
         if (!this.isProcessingHistory) {
             this.emit('store.message-added', { jid: normalizedJid, message });
@@ -618,6 +678,7 @@ class ConcurrentStore extends EventEmitter {
                 ...chat,
                 lastUpdated: Date.now()
             });
+            this.markDirty();
         } else {
             this.chats.set(chat.id, {
                 ...chat,
@@ -625,6 +686,7 @@ class ConcurrentStore extends EventEmitter {
                 lastUpdated: Date.now()
             });
             this.stats.totalChats++;
+            this.markDirty();
         }
 
         if (!this.isProcessingHistory) {
@@ -637,6 +699,10 @@ class ConcurrentStore extends EventEmitter {
         this.stats.totalContacts = this.contacts.size;
         this.stats.totalMessages = Array.from(this.messages.values())
             .reduce((total, chatMsgs) => total + chatMsgs.size, 0);
+    }
+
+    markDirty() {
+        this.isDirty = true;
     }
 
     async acquireWriteLock(key) {
@@ -725,10 +791,11 @@ class ConcurrentStore extends EventEmitter {
             clearInterval(this.autoSaveTimer);
         }
 
-        if (this.hasValidData()) {
-            await this.writeToMySQL(); 
+        if (this.hasValidData() && this.isDirty) {
+            await this.writeToMySQL({ force: true }); 
         }
 
+        this.closed = true;
         this.removeAllListeners();
     }
 
@@ -752,6 +819,7 @@ class ConcurrentStore extends EventEmitter {
             ...update,
             lastUpdated: Date.now()
         });
+        this.markDirty();
 
         if (!this.isProcessingHistory) {
             this.emit('store.group-updated', update);
