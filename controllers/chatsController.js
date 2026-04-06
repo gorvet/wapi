@@ -3,8 +3,7 @@ import {
     getChatList,
     isExists,
     sendMessage,
-    formatPhone,
-    formatGroup,
+    formatChatJid,
     readMessage,
     getMessageMedia,
     getStoreMessage,
@@ -20,13 +19,13 @@ const send = async (req, res) => {
     const session = getSession(res.locals.sessionId)
     const { message } = req.body
     const isGroup = req.body.isGroup ?? false
-    const receiver = isGroup ? formatGroup(req.body.receiver) : formatPhone(req.body.receiver)
+    const receiver = formatChatJid(req.body.receiver, isGroup)
 
     const typesMessage = ['image', 'video', 'audio', 'document', 'sticker']
 
     const filterTypeMessaje = compareAndFilter(Object.keys(message), typesMessage)
     try {
-        const exists = await isExists(session, receiver, isGroup)
+        const exists = receiver.endsWith('@lid') ? true : await isExists(session, receiver, isGroup)
 
         if (!exists) {
             return response(res, 400, false, 'The receiver number is not exists.')
@@ -70,10 +69,10 @@ const sendBulk = async (req, res) => {
             delay = 1000
         }
 
-        receiver = formatPhone(receiver)
+        receiver = formatChatJid(receiver)
 
         try {
-            const exists = await isExists(session, receiver)
+            const exists = receiver.endsWith('@lid') ? true : await isExists(session, receiver)
 
             if (!exists) {
                 errors.push({ key, message: 'number not exists on whatsapp' })
@@ -106,7 +105,7 @@ const deleteChat = async (req, res) => {
     const { receiver, isGroup, message } = req.body
 
     try {
-        const jidFormat = isGroup ? formatGroup(receiver) : formatPhone(receiver)
+        const jidFormat = formatChatJid(receiver, isGroup)
 
         await sendMessage(session, jidFormat, { delete: message })
         response(res, 200, true, 'Message has been successfully deleted.')
@@ -120,7 +119,7 @@ const forward = async (req, res) => {
     const { forward, receiver, isGroup } = req.body
 
     const { id, remoteJid } = forward
-    const jidFormat = isGroup ? formatGroup(receiver) : formatPhone(receiver)
+    const jidFormat = formatChatJid(receiver, isGroup)
 
     try {
         const messages = await session.store.loadMessages(remoteJid, 25, null)
@@ -164,7 +163,7 @@ const sendPresence = async (req, res) => {
     const { receiver, isGroup, presence } = req.body
 
     try {
-        const jidFormat = isGroup ? formatGroup(receiver) : formatPhone(receiver)
+        const jidFormat = formatChatJid(receiver, isGroup)
 
         await session.sendPresenceUpdate(presence, jidFormat)
 

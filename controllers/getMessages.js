@@ -1,4 +1,4 @@
-import { getSession, formatGroup, formatPhone } from '../whatsapp.js'
+import { getSession, formatChatJid } from '../whatsapp.js'
 import response from './../response.js'
 
 const getMessages = async (req, res) => {
@@ -8,7 +8,7 @@ const getMessages = async (req, res) => {
     const { limit = 25, cursorId = null, cursorFromMe = null, isGroup = false } = req.query
 
     const isGroupBool = isGroup === 'true'
-    const jidFormat = isGroupBool ? formatGroup(jid) : formatPhone(jid)
+    const jidFormat = formatChatJid(jid, isGroupBool)
 
     const cursor = {}
 
