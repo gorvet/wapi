@@ -3,6 +3,13 @@ import { decryptText, encryptText } from '../persistence/crypto.js';
 
 // --- Mutex en memoria por session_id (serializa escrituras dentro del proceso) ---
 const _memQueues = new Map();
+const getEnv = (key, fallback = '') => {
+  const raw = process.env[key];
+  if (typeof raw !== 'string') return fallback;
+  const value = raw.trim();
+  return value === '' ? fallback : value;
+};
+
 function withSessionMutex(sessionId, task) {
   const prev = _memQueues.get(sessionId) || Promise.resolve();
   const next = prev.then(() => task());
@@ -17,11 +24,13 @@ export default class MySQLAuthStore {
     constructor() {
         if (!MySQLAuthStore.pool) {
             const dbPoolLimit = Number.parseInt(process.env.DB_POOL_LIMIT ?? '30', 10);
+            const dbPort = Number.parseInt(getEnv('DB_PORT', '3306'), 10);
             MySQLAuthStore.pool = mysql.createPool({
-                host: 'localhost',
-                user: process.env.DB_USER,
-                password: process.env.DB_PASWD,
-                database: process.env.DB_NAME,
+                host: getEnv('DB_HOST', '127.0.0.1'),
+                port: Number.isNaN(dbPort) ? 3306 : dbPort,
+                user: getEnv('DB_USER', 'root'),
+                password: getEnv('DB_PASWD', ''),
+                database: getEnv('DB_NAME', 'baileys_api'),
                 waitForConnections: true,
                 connectionLimit: Number.isNaN(dbPoolLimit) ? 30 : dbPoolLimit,
                 queueLimit: 0,

@@ -4,7 +4,7 @@ import {
     getSession,
     getProfilePicture,
     formatPhone,
-    formatGroup,
+    formatChatJid,
     profilePicture,
     blockAndUnblockUser,
     sendMessage,
@@ -63,7 +63,7 @@ const getProfilePictureUser = async (req, res) => {
     try {
         const session = getSession(res.locals.sessionId)
         const isGroup = req.body.isGroup ?? false
-        const jid = isGroup ? formatGroup(req.body.jid) : formatPhone(req.body.jid)
+        const jid = formatChatJid(req.body.jid, isGroup)
 
         const imagen = await getProfilePicture(session, jid, 'image')
 
@@ -81,7 +81,7 @@ const blockAndUnblockContact = async (req, res) => {
     try {
         const session = getSession(res.locals.sessionId)
         const { jid, isBlock } = req.body
-        const jidFormat = formatPhone(jid)
+        const jidFormat = formatChatJid(jid)
         const blockFormat = isBlock === true ? 'block' : 'unblock'
         await blockAndUnblockUser(session, jidFormat, blockFormat)
         response(res, 200, true, 'The contact has been blocked or unblocked successfully')

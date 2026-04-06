@@ -1,10 +1,16 @@
-import { isSessionExists, isSessionConnected } from '../whatsapp.js'
+import { isSessionExists, isSessionConnected, getSessionIssue } from '../whatsapp.js'
 import response from './../response.js'
 
 const validate = (req, res, next) => {
     const sessionId = req.query.id ?? req.params.id
 
     if (!isSessionExists(sessionId)) {
+        const issue = getSessionIssue(sessionId)
+        // Fork guard: surface the last mismatch briefly so clients do not see an ambiguous 404.
+        if (issue && req.baseUrl === '/sessions' && (req.path.startsWith('/status/') || req.path.startsWith('/find/'))) {
+            return response(res, 409, false, issue.message, issue)
+        }
+
         return response(res, 404, false, 'Session not found.')
     }
 

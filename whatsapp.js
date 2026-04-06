@@ -34,6 +34,8 @@ const msgRetryCounterCache = new NodeCache()
 const sessions = new Map()
 const retries = new Map()
 const creatingSessions = new Set()
+const sessionIssues = new Map()
+const sessionIssueTimers = new Map()
 
 const { driver: SESSION_STORAGE_DRIVER, encryptionEnabled: DB_ENCRYPTION_ENABLED } = getPersistenceInfo()
 
@@ -43,9 +45,127 @@ if (DB_ENCRYPTION_ENABLED) {
 }
 
 const APP_WEBHOOK_ALLOWED_EVENTS = (process.env.APP_WEBHOOK_ALLOWED_EVENTS ?? 'ALL').split(',')
+const SESSION_ISSUE_TTL_MS = Number.parseInt(process.env.SESSION_ISSUE_TTL_MS ?? '900000', 10)
 
 const sessionsDir = (sessionId = '') => {
     return join(__dirname, 'sessions', sessionId ? sessionId : '')
+}
+
+// Fork guard: tie QR auth to the expected phone so a different account cannot claim the session id.
+const normalizePhoneDigits = (value = '') => {
+    if (typeof value !== 'string') {
+        return ''
+    }
+
+    const digits = value.replace(/\D/g, '')
+    return digits.length >= 8 && digits.length <= 15 ? digits : ''
+}
+
+const extractPhoneFromJid = (jid = '') => {
+    if (typeof jid !== 'string' || jid.length === 0) {
+        return ''
+    }
+
+    return normalizePhoneDigits(jid.split(':')[0].split('@')[0])
+}
+
+const isExplicitJid = (value = '') => {
+    if (typeof value !== 'string') {
+        return false
+    }
+
+    return /@(?:s\.whatsapp\.net|g\.us|lid|broadcast|newsletter)$/i.test(value.trim())
+}
+
+const isLidJid = (value = '') => {
+    return typeof value === 'string' && value.trim().endsWith('@lid')
+}
+
+const findContactByJid = (store, jid = '') => {
+    if (!store?.contacts || typeof jid !== 'string' || jid.length === 0) {
+        return null
+    }
+
+    for (const [entryJid, contact] of store.contacts.entries()) {
+        if (entryJid === jid || contact?.id === jid || contact?.lid === jid) {
+            return { entryJid, contact }
+        }
+    }
+
+    return null
+}
+
+const resolvePhoneJid = (store, jid = '') => {
+    if (typeof jid !== 'string' || jid.length === 0) {
+        return ''
+    }
+
+    if (jid.endsWith('@s.whatsapp.net')) {
+        return jid
+    }
+
+    const match = findContactByJid(store, jid)
+    const candidate = match?.entryJid ?? match?.contact?.id ?? ''
+
+    return candidate.endsWith('@s.whatsapp.net') ? candidate : ''
+}
+
+const enrichMessageAddressing = (store, message = {}) => {
+    if (!message?.key) {
+        return message
+    }
+
+    const remotePhoneJid = resolvePhoneJid(store, message.key.remoteJid)
+    const participantPhoneJid = resolvePhoneJid(store, message.key.participant)
+
+    return {
+        ...message,
+        key: {
+            ...message.key,
+            phoneJid: remotePhoneJid || undefined,
+            phoneNumber: extractPhoneFromJid(remotePhoneJid) || undefined,
+            participantPhoneJid: participantPhoneJid || undefined,
+            participantPhoneNumber: extractPhoneFromJid(participantPhoneJid) || undefined,
+        },
+    }
+}
+
+const resolveExpectedPhone = (sessionId, phoneNumber = '') => {
+    return normalizePhoneDigits(phoneNumber) || normalizePhoneDigits(sessionId)
+}
+
+const clearSessionIssue = (sessionId) => {
+    const timer = sessionIssueTimers.get(sessionId)
+    if (timer) {
+        clearTimeout(timer)
+        sessionIssueTimers.delete(sessionId)
+    }
+
+    sessionIssues.delete(sessionId)
+}
+
+const setSessionIssue = (sessionId, issue) => {
+    clearSessionIssue(sessionId)
+    sessionIssues.set(sessionId, {
+        ...issue,
+        timestamp: new Date().toISOString(),
+    })
+
+    if (Number.isNaN(SESSION_ISSUE_TTL_MS) || SESSION_ISSUE_TTL_MS <= 0) {
+        return
+    }
+
+    const timer = setTimeout(() => {
+        sessionIssues.delete(sessionId)
+        sessionIssueTimers.delete(sessionId)
+    }, SESSION_ISSUE_TTL_MS)
+
+    timer.unref?.()
+    sessionIssueTimers.set(sessionId, timer)
+}
+
+const getSessionIssue = (sessionId) => {
+    return sessionIssues.get(sessionId) ?? null
 }
 
 const isSessionExists = (sessionId) => {
@@ -71,6 +191,26 @@ const shouldReconnect = (sessionId) => {
     }
 
     return false
+}
+
+// Fork guard: reject and purge auth state when the linked WhatsApp number does not match.
+const rejectSessionPhoneMismatch = async (sessionId, wa, expectedPhone, actualPhone) => {
+    const issue = {
+        code: 'session_phone_mismatch',
+        message: 'The scanned WhatsApp account does not match the expected phone number.',
+        expectedPhone,
+        actualPhone,
+    }
+
+    setSessionIssue(sessionId, issue)
+    console.warn(`[SESSION] Phone mismatch for ${sessionId}: expected ${expectedPhone}, got ${actualPhone}`)
+
+    try {
+        await wa.logout()
+    } catch {
+    } finally {
+        await deleteSession(sessionId)
+    }
 }
 
 const callWebhook = async (instance, eventType, eventData) => {
@@ -154,6 +294,8 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
 
     creatingSessions.add(sessionId)
     try {
+        clearSessionIssue(sessionId)
+
         if (isSessionExists(sessionId)) {
             await closeSessionResources(sessionId, { deleteAuth: false, clearRetry: false })
         }
@@ -238,8 +380,9 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
                 messages.map(async (msg) => {
                     try {
                         const typeMessage = Object.keys(msg.message)[0]
+                        const enrichedMessage = enrichMessageAddressing(store, msg)
                         if (msg?.status) {
-                            msg.status = WAMessageStatus[msg?.status] ?? 'UNKNOWN'
+                            enrichedMessage.status = WAMessageStatus[msg?.status] ?? 'UNKNOWN'
                         }
 
                         if (
@@ -265,7 +408,7 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
                             })
 
                             return {
-                                ...msg,
+                                ...enrichedMessage,
                                 message: {
                                     [typeMessage]: {
                                         ...msg.message[typeMessage],
@@ -275,7 +418,7 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
                             }
                         }
 
-                        return msg
+                        return enrichedMessage
                     } catch {
                         return {}
                     }
@@ -350,6 +493,18 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
         callWebhook(sessionId, 'CONNECTION_UPDATE', update)
 
         if (connection === 'open') {
+            const expectedPhone = resolveExpectedPhone(sessionId, options.phoneNumber)
+            const actualPhone = extractPhoneFromJid(
+                wa.user?.id ?? wa.authState?.creds?.me?.id ?? state.creds?.me?.id ?? sessions.get(sessionId)?.user?.id,
+            )
+
+            // Fork guard: fail fast if the authenticated number is not the one requested for this session.
+            if (expectedPhone && actualPhone && expectedPhone !== actualPhone) {
+                await rejectSessionPhoneMismatch(sessionId, wa, expectedPhone, actualPhone)
+                return
+            }
+
+            clearSessionIssue(sessionId)
             retries.delete(sessionId)
 
             let removedContacts = 0
@@ -366,6 +521,21 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
         }
 
         if (connection === 'close') {
+            // Keep the mismatch reason visible for a short time even after the auth files are deleted.
+            if (getSessionIssue(sessionId)?.code === 'session_phone_mismatch') {
+                if (res && !res.headersSent) {
+                    response(
+                        res,
+                        409,
+                        false,
+                        'The scanned WhatsApp account does not match the expected phone number.',
+                        getSessionIssue(sessionId),
+                    )
+                }
+
+                return await deleteSession(sessionId)
+            }
+
             if (statusCode === DisconnectReason.loggedOut || !shouldReconnect(sessionId)) {
                 if (res && !res.headersSent) {
                     response(res, 500, false, 'Unable to create session.')
@@ -497,6 +667,10 @@ const isExists = async (session, jid, isGroup = false) => {
             return Boolean(result.id)
         }
 
+        if (isLidJid(jid)) {
+            return Boolean(findContactByJid(session?.store, jid) || session?.store?.chats?.get?.(jid))
+        }
+
         ;[result] = await session.onWhatsApp(jid)
 
         return result.exists
@@ -560,6 +734,28 @@ const formatPhone = (phone) => {
     let formatted = phone.replace(/\D/g, '')
 
     return (formatted += '@s.whatsapp.net')
+}
+
+const formatChatJid = (value, isGroup = false) => {
+    if (typeof value !== 'string') {
+        return ''
+    }
+
+    const trimmed = value.trim()
+
+    if (!trimmed) {
+        return ''
+    }
+
+    if (isGroup) {
+        return formatGroup(trimmed)
+    }
+
+    if (isExplicitJid(trimmed)) {
+        return trimmed
+    }
+
+    return formatPhone(trimmed)
 }
 
 const formatGroup = (group) => {
@@ -714,6 +910,7 @@ export {
     isSessionExists,
     createSession,
     getSession,
+    getSessionIssue,
     getListSessions,
     deleteSession,
     getChatList,
@@ -724,6 +921,7 @@ export {
     updateProfileName,
     getProfilePicture,
     formatPhone,
+    formatChatJid,
     formatGroup,
     cleanup,
     participantsUpdate,
