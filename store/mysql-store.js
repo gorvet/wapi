@@ -1,7 +1,9 @@
-import { jidNormalizedUser, toNumber, isJidUser } from 'baileys';
+import { jidNormalizedUser, toNumber, isPnUser, isLidUser } from 'baileys';
 import { EventEmitter } from 'events';
 import mysql from 'mysql2/promise';
 import { decryptText, encryptText } from '../persistence/crypto.js';
+
+const isJidUser = jid => isPnUser(jid) || isLidUser(jid);
 
 const dbPoolLimit = Number.parseInt(process.env.DB_POOL_LIMIT ?? '30', 10);
 const sharedPool = mysql.createPool({

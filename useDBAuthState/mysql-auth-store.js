@@ -1,6 +1,20 @@
 import mysql from 'mysql2/promise';
 import { decryptText, encryptText } from '../persistence/crypto.js';
 
+const hasRecoverableCreds = (storedValue) => {
+  const raw = decryptText(storedValue);
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return false;
+  }
+
+  try {
+    const creds = JSON.parse(raw);
+    return creds && typeof creds === 'object' && creds.registered === true;
+  } catch {
+    return false;
+  }
+};
+
 // --- Mutex en memoria por session_id (serializa escrituras dentro del proceso) ---
 const _memQueues = new Map();
 function withSessionMutex(sessionId, task) {
@@ -34,19 +48,22 @@ export default class MySQLAuthStore {
     }
 
     async getAllSessionIds() {
-    const query = `
-        SELECT session_id 
+        const query = `
+        SELECT session_id, creds
         FROM wa_sessions
         WHERE creds IS NOT NULL
+          AND TRIM(creds) <> ''
     `;
-    try {
-        const [rows] = await this.pool.query(query); // Ejecuta la consulta
-        return rows.map(row => row.session_id); // Extrae y devuelve todos los session_id
-    } catch (error) {
-        console.error('Error retrieving session IDs:', error);
-        throw error; // Relanza el error para que sea manejado por el llamador
+        try {
+            const [rows] = await this.pool.query(query); // Ejecuta la consulta
+            return rows
+                .filter(row => hasRecoverableCreds(row.creds))
+                .map(row => row.session_id); // Extrae y devuelve todos los session_id
+        } catch (error) {
+            console.error('Error retrieving session IDs:', error);
+            throw error; // Relanza el error para que sea manejado por el llamador
+        }
     }
-}
 
 	// Guardar credenciales en la base de datos
 async setCredsData(sessionId, dataString, col /* 'creds' | 'session_keys' */) {
@@ -120,7 +137,8 @@ async setCredsData(sessionId, dataString, col /* 'creds' | 'session_keys' */) {
             const [rows] = await this.pool.query(query, [sessionId]);
             if (rows.length > 0) {
                 const value = rows[0][col];
-                return decryptText(value)
+                const decrypted = decryptText(value)
+                return typeof decrypted === 'string' && decrypted.trim() === '' ? null : decrypted
             }
             return null; // Si no hay filas para este `sessionId`
         } catch (error) {

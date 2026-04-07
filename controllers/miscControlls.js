@@ -106,7 +106,7 @@ const shareStory = async (req, res) => {
     if (session?.user?.id) {
         finalReceivers.push(formatPhone(session.user.id));
     }
-    
+
     if (!receiver || (typeof receiver === 'string' && receiver.length === 0)) {
         return response(res, 400, false, 'The receiver number does not exist.');
     }
@@ -166,31 +166,14 @@ const shareStory = async (req, res) => {
             }
         }
 
-
-        //const chunks = chunkArray(finalReceivers, 300);
-
-        /*for (const group of chunks) {
-            try {
-                await sendMessage(session, statusJid, message, {
-                    ...optionsBroadcast,
-                    statusJidList: group
-                }, 0); // 500 ms delay por bloque
-                
-            } catch (err) {
-                console.warn('❌ Falló el envío para grupo:', group, '\nError:', err?.message || err);
-            }
-        }*/
         await sendMessage(session, statusJid, message, optionsBroadcast, 0);
 
         return response(res, 200, true, 'The story status has been successfully sent.');
-    } catch (err){
-            console.error('❌ Error en shareStory:', err);
+    } catch {
         return response(res, 500, false, 'Failed to send the story status.');
     }
 };
 
-const chunkArray = (arr, size) =>
-    arr.reduce((acc, _, i) => (i % size ? acc : [...acc, arr.slice(i, i + size)]), []);
 
 
 export {

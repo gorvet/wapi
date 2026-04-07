@@ -1,7 +1,9 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { jidNormalizedUser, toNumber, isLidUser } from 'baileys';
+import { jidNormalizedUser, toNumber, isPnUser, isLidUser } from 'baileys';
 import { EventEmitter } from 'events';
+
+const isJidUser = jid => isPnUser(jid) || isLidUser(jid);
 
 class ConcurrentStore extends EventEmitter {
     constructor(options = {}) {

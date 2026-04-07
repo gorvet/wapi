@@ -1,4 +1,5 @@
 import { join } from 'path'
+import { appendFile, mkdir } from 'fs/promises'
 import pino from 'pino'
 import makeWASocketModule, {
     makeCacheableSignalKeyStore,
@@ -18,31 +19,46 @@ import response from './response.js'
 import { downloadImage } from './utils/download.js'
 import axios from 'axios'
 import NodeCache from 'node-cache'
-
-import https from 'https';
-
+import https from 'https'
 import {
     createSessionPersistence,
     deleteSessionPersistence,
     getPersistenceInfo,
     listRecoverableSessionIds,
-    markStoreDirty,
-} from './persistence/index.js';
+} from './persistence/index.js'
 
 const msgRetryCounterCache = new NodeCache()
 
 const sessions = new Map()
 const retries = new Map()
-const creatingSessions = new Set()
+const persistence = getPersistenceInfo()
 
-const { driver: SESSION_STORAGE_DRIVER, encryptionEnabled: DB_ENCRYPTION_ENABLED } = getPersistenceInfo()
+const APP_WEBHOOK_ALLOWED_EVENTS = process.env.APP_WEBHOOK_ALLOWED_EVENTS.split(',')
 
-console.log(`[STORAGE] Driver activo: ${SESSION_STORAGE_DRIVER}`)
-if (DB_ENCRYPTION_ENABLED) {
-    console.log('[STORAGE] Cifrado de persistencia MySQL: ACTIVO')
+const webhookLogFile = join(__dirname, 'logs', 'webhook.log')
+
+const logWebhook = async (entry) => {
+    try {
+        await mkdir(join(__dirname, 'logs'), { recursive: true })
+        await appendFile(webhookLogFile, `[${new Date().toISOString()}]\n${JSON.stringify(entry, null, 2)}\n----\n`)
+    } catch {
+        // Do not let diagnostics break WhatsApp processing.
+    }
 }
 
-const APP_WEBHOOK_ALLOWED_EVENTS = (process.env.APP_WEBHOOK_ALLOWED_EVENTS ?? 'ALL').split(',')
+const summarizeWebhookData = (data) => {
+    const isArray = Array.isArray(data)
+    const first = isArray ? data[0] : null
+
+    return {
+        dataType: data === null ? 'null' : typeof data,
+        isArray,
+        length: isArray ? data.length : undefined,
+        keys: data && typeof data === 'object' && !isArray ? Object.keys(data).slice(0, 20) : undefined,
+        firstKeys: first && typeof first === 'object' ? Object.keys(first).slice(0, 20) : undefined,
+        firstMessageKeys: first?.message ? Object.keys(first.message).slice(0, 20) : undefined,
+    }
+}
 
 const sessionsDir = (sessionId = '') => {
     return join(__dirname, 'sessions', sessionId ? sessionId : '')
@@ -81,85 +97,58 @@ const callWebhook = async (instance, eventType, eventData) => {
 
 const webhook = async (instance, type, data) => {
     if (process.env.APP_WEBHOOK_URL) {
-        axios
-            .post(`${process.env.APP_WEBHOOK_URL}`, {
+        const url = `${process.env.APP_WEBHOOK_URL}`
+        const payload = { instance, type, data }
+
+        await logWebhook({
+            action: 'webhook_post_start',
+            url,
+            instance,
+            type,
+            data: summarizeWebhookData(data),
+        })
+
+        try {
+            const success = await axios.post(url, payload, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Webhook-Wapi': process.env.AUTHENTICATION_GLOBAL_AUTH_TOKEN,
+                },
+                httpsAgent: new https.Agent({
+                    rejectUnauthorized: false,
+                }),
+                timeout: 15000,
+                validateStatus: () => true,
+            })
+
+            await logWebhook({
+                action: 'webhook_post_result',
+                url,
                 instance,
                 type,
-                data,
-            }, {
-                 headers: {
-                    'X-Webhook-Wapi': process.env.AUTHENTICATION_GLOBAL_AUTH_TOKEN
-                     // Agregar cabecera personalizada
-                },
-                httpsAgent: new https.Agent({  
-                rejectUnauthorized: false
-             })
+                status: success.status,
+                response: typeof success.data === 'string' ? success.data.slice(0, 500) : success.data,
             })
-            .then((success) => {
-                return success
-            })
-            .catch((error) => {
-                return error
-            })
-    }
-}
 
-const closeSessionResources = async (
-    sessionId,
-    options = { deleteAuth: false, clearRetry: true },
-) => {
-    const { deleteAuth = false, clearRetry = true } = options
-    const session = sessions.get(sessionId)
-
-    sessions.delete(sessionId)
-    if (clearRetry) {
-        retries.delete(sessionId)
-    }
-
-    if (session?.store?.cleanup) {
-        try {
-            await session.store.cleanup()
+            return success
         } catch (error) {
-            console.error(`Error cleaning store for ${sessionId}:`, error?.message || error)
-        }
-    }
+            await logWebhook({
+                action: 'webhook_post_error',
+                url,
+                instance,
+                type,
+                code: error?.code ?? '',
+                message: error?.message ?? String(error),
+                responseStatus: error?.response?.status ?? null,
+            })
 
-    try {
-        session?.ev?.removeAllListeners?.()
-    } catch {
-    }
-
-    try {
-        session?.end?.()
-    } catch {
-    }
-
-    try {
-        session?.ws?.close?.()
-    } catch {
-    }
-
-    if (deleteAuth) {
-        try {
-            await deleteSessionPersistence(sessionId, sessionsDir)
-        } catch (error) {
-            console.error('Error eliminando persistencia de sesion:', error)
+            return null
         }
     }
 }
+
 const createSession = async (sessionId, res = null, options = { usePairingCode: false, phoneNumber: '' }) => {
-    if (creatingSessions.has(sessionId)) {
-        return
-    }
-
-    creatingSessions.add(sessionId)
-    try {
-        if (isSessionExists(sessionId)) {
-            await closeSessionResources(sessionId, { deleteAuth: false, clearRetry: false })
-        }
-
     const logger = pino({ level: 'silent' })
-
     const { store, state, saveCreds } = await createSessionPersistence(sessionId, sessionsDir)
 
     // Fetch latest version of WA Web
@@ -186,6 +175,7 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
         getMessage,
     })
     store?.bind(wa.ev)
+
     sessions.set(sessionId, { ...wa, store })
 
     if (options.usePairingCode && !wa.authState.creds.registered) {
@@ -351,18 +341,6 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
 
         if (connection === 'open') {
             retries.delete(sessionId)
-
-            let removedContacts = 0
-            for (const [jid, contacto] of store.contacts.entries()) {
-                if (!(contacto?.name || contacto?.verifiedName) || jid.includes('@g.us') || jid.includes('@lid')) {
-                    store.contacts.delete(jid)
-                    removedContacts++
-                }
-            }
-
-            if (removedContacts > 0) {
-                markStoreDirty(store)
-            }
         }
 
         if (connection === 'close') {
@@ -374,7 +352,6 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
                 return await deleteSession(sessionId)
             }
 
-            await closeSessionResources(sessionId, { deleteAuth: false, clearRetry: false })
             setTimeout(
                 () => {
                     createSession(sessionId, res)
@@ -450,9 +427,6 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
         // Only if store is present
         return proto.Message.fromObject({})
     }
-    } finally {
-        creatingSessions.delete(sessionId)
-    }
 }
 
 /**
@@ -467,15 +441,18 @@ const getListSessions = () => {
 }
 
 const deleteSession = async (sessionId) => {
-   /* const sessionFile = 'md_' + sessionId
-    const storeFile = `${sessionId}_store.json`
-    const rmOptions = { force: true, recursive: true }
+    const session = sessions.get(sessionId)
 
-    rmSync(sessionsDir(sessionFile), rmOptions)
-    rmSync(sessionsDir(storeFile), rmOptions)*/
-    await closeSessionResources(sessionId, { deleteAuth: true, clearRetry: true })
+    try {
+        await session?.store?.cleanup?.()
+    } catch (error) {
+        console.error(`Error cleaning store for session ${sessionId}:`, error)
+    }
 
-    /*aqui colocar el delet section*/
+    await deleteSessionPersistence(sessionId, sessionsDir)
+
+    sessions.delete(sessionId)
+    retries.delete(sessionId)
 }
 
 const getChatList = (sessionId, isGroup = false) => {
@@ -512,8 +489,8 @@ const sendMessage = async (session, receiver, message, options = {}, delayMs = 1
     try {
         await delay(parseInt(delayMs))
         return await session.sendMessage(receiver, message, options)
-    } catch (err) {
-        return Promise.reject(err) // eslint-disable-line prefer-promise-reject-errors
+    } catch {
+        return Promise.reject(null) // eslint-disable-line prefer-promise-reject-errors
     }
 }
 
@@ -576,8 +553,8 @@ const cleanup = () => {
     console.log('Running cleanup before exit.')
 
     sessions.forEach((session, sessionId) => {
-        closeSessionResources(sessionId, { deleteAuth: false, clearRetry: false }).catch((error) => {
-            console.error(`Error on cleanup for ${sessionId}:`, error?.message || error)
+        session.store?.cleanup?.().catch((error) => {
+            console.error(`Error persisting session ${sessionId} during cleanup:`, error)
         })
     })
 }
@@ -674,40 +651,25 @@ const convertToBase64 = (arrayBytes) => {
     return Buffer.from(byteArray).toString('base64')
 }
 
-/*const init = () => {
-    readdir(sessionsDir(), (err, files) => {
-        if (err) {
-            throw err
-        }
+const init = async () => {
+    console.log(
+        `[STORAGE] Session driver: ${persistence.driver}${persistence.encryptionEnabled ? ' (encryption enabled)' : ''}`,
+    )
 
-        for (const file of files) {
-            if ((!file.startsWith('md_') && !file.startsWith('legacy_')) || file.endsWith('_store')) {
-                continue
-            }
+    try {
+        const sessionIds = await listRecoverableSessionIds(sessionsDir)
 
-            const filename = file.replace('.json', '')
-            const sessionId = filename.substring(3)
+        for (const sessionId of sessionIds) {
             console.log('Recovering session: ' + sessionId)
-            createSession(sessionId)
+            try {
+                await createSession(sessionId)
+            } catch (error) {
+                console.error(`Error recovering session ${sessionId}:`, error)
+            }
         }
-    })
-}*/
-const init = () => {
-    listRecoverableSessionIds(sessionsDir)
-        .then((sessionIds) => {
-            if (!sessionIds || sessionIds.length === 0) {
-                console.log('No sessions found to recover.')
-                return
-            }
-
-            for (const sessionId of sessionIds) {
-                console.log('Recovering session: ' + sessionId)
-                createSession(sessionId)
-            }
-        })
-        .catch((error) => {
-            console.error('Error recovering sessions:', error)
-        })
+    } catch (error) {
+        console.error('Error listing recoverable sessions:', error)
+    }
 }
 
 export {
