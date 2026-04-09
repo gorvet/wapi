@@ -3,3 +3,6 @@ package-lock.json
 yarn.lock
 .env
 bun.lock
+baileys-api-main/
+logs/
+Baileys-master/

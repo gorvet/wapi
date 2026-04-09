@@ -1,6 +1,14 @@
 import { WAProto as proto, initAuthCreds, BufferJSON } from 'baileys';
 import MySQLAuthStore from './mysql-auth-store.js';
 
+const authJsonReviver = (key, value) => {
+    if (value?.type === 'Buffer' && Array.isArray(value.data)) {
+        return Buffer.from(value.data);
+    }
+
+    return BufferJSON.reviver(key, value);
+};
+
 const useDBAuthState = async (sessionId, options = {}) => {
     if (!sessionId) {
         throw new Error('sessionId is required to manage authentication state.');
@@ -9,8 +17,8 @@ const useDBAuthState = async (sessionId, options = {}) => {
     const storage = options.storage ?? new MySQLAuthStore();
 
     // Cargar credenciales iniciales o generar nuevas si no existen
-    const dataRaw = await storage.getCredsData(sessionId, 'creds') || JSON.stringify((0, initAuthCreds)());
-    const creds = JSON.parse(dataRaw, BufferJSON.reviver);
+    const dataRaw = await storage.getCredsData(sessionId, 'creds') || JSON.stringify((0, initAuthCreds)(), BufferJSON.replacer);
+    const creds = JSON.parse(dataRaw, authJsonReviver);
 
     let saveTimer = null;
     let keysTimer = null;
@@ -35,7 +43,7 @@ const useDBAuthState = async (sessionId, options = {}) => {
         }
 
         try {
-            allKeysCache = JSON.parse(allKeysRaw, BufferJSON.reviver) || {};
+            allKeysCache = JSON.parse(allKeysRaw, authJsonReviver) || {};
         } catch {
             console.warn(`[AUTH] session_keys corrupto para ${sessionId}; se reinicia cache`);
             allKeysCache = {};

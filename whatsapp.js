@@ -1,5 +1,4 @@
 import { join } from 'path'
-import { appendFile, mkdir } from 'fs/promises'
 import pino from 'pino'
 import makeWASocketModule, {
     makeCacheableSignalKeyStore,
@@ -8,6 +7,7 @@ import makeWASocketModule, {
     downloadMediaMessage,
     getAggregateVotesInPollMessage,
     fetchLatestBaileysVersion,
+    jidDecode,
     WAMessageStatus,
 } from 'baileys'
 
@@ -31,34 +31,10 @@ const msgRetryCounterCache = new NodeCache()
 
 const sessions = new Map()
 const retries = new Map()
+const blockedWebhookSessions = new Set()
 const persistence = getPersistenceInfo()
 
 const APP_WEBHOOK_ALLOWED_EVENTS = process.env.APP_WEBHOOK_ALLOWED_EVENTS.split(',')
-
-const webhookLogFile = join(__dirname, 'logs', 'webhook.log')
-
-const logWebhook = async (entry) => {
-    try {
-        await mkdir(join(__dirname, 'logs'), { recursive: true })
-        await appendFile(webhookLogFile, `[${new Date().toISOString()}]\n${JSON.stringify(entry, null, 2)}\n----\n`)
-    } catch {
-        // Do not let diagnostics break WhatsApp processing.
-    }
-}
-
-const summarizeWebhookData = (data) => {
-    const isArray = Array.isArray(data)
-    const first = isArray ? data[0] : null
-
-    return {
-        dataType: data === null ? 'null' : typeof data,
-        isArray,
-        length: isArray ? data.length : undefined,
-        keys: data && typeof data === 'object' && !isArray ? Object.keys(data).slice(0, 20) : undefined,
-        firstKeys: first && typeof first === 'object' ? Object.keys(first).slice(0, 20) : undefined,
-        firstMessageKeys: first?.message ? Object.keys(first.message).slice(0, 20) : undefined,
-    }
-}
 
 const sessionsDir = (sessionId = '') => {
     return join(__dirname, 'sessions', sessionId ? sessionId : '')
@@ -89,7 +65,40 @@ const shouldReconnect = (sessionId) => {
     return false
 }
 
+const normalizePhoneNumber = (value = '') => {
+    return String(value).replace(/\D/g, '')
+}
+
+const getPhoneNumberFromJid = (jid = '') => {
+    const decoded = jidDecode(jid)
+
+    return normalizePhoneNumber(decoded?.user ?? String(jid).split('@')[0].split(':')[0])
+}
+
+const getExpectedSessionPhoneNumber = (sessionId, options = {}) => {
+    const source = options.phoneNumber || sessionId
+    const phoneNumber = normalizePhoneNumber(source)
+
+    return phoneNumber.length >= 6 ? phoneNumber : ''
+}
+
+const getSessionPhoneMismatch = (sessionId, options, wa) => {
+    const expected = getExpectedSessionPhoneNumber(sessionId, options)
+    const actualJid = wa.user?.id ?? wa.authState?.creds?.me?.id
+    const actual = getPhoneNumberFromJid(actualJid)
+
+    if (!expected || expected === actual) {
+        return null
+    }
+
+    return { expected, actual, jid: actualJid }
+}
+
 const callWebhook = async (instance, eventType, eventData) => {
+    if (blockedWebhookSessions.has(instance)) {
+        return
+    }
+
     if (APP_WEBHOOK_ALLOWED_EVENTS.includes('ALL') || APP_WEBHOOK_ALLOWED_EVENTS.includes(eventType)) {
         await webhook(instance, eventType, eventData)
     }
@@ -99,14 +108,6 @@ const webhook = async (instance, type, data) => {
     if (process.env.APP_WEBHOOK_URL) {
         const url = `${process.env.APP_WEBHOOK_URL}`
         const payload = { instance, type, data }
-
-        await logWebhook({
-            action: 'webhook_post_start',
-            url,
-            instance,
-            type,
-            data: summarizeWebhookData(data),
-        })
 
         try {
             const success = await axios.post(url, payload, {
@@ -121,27 +122,8 @@ const webhook = async (instance, type, data) => {
                 validateStatus: () => true,
             })
 
-            await logWebhook({
-                action: 'webhook_post_result',
-                url,
-                instance,
-                type,
-                status: success.status,
-                response: typeof success.data === 'string' ? success.data.slice(0, 500) : success.data,
-            })
-
             return success
         } catch (error) {
-            await logWebhook({
-                action: 'webhook_post_error',
-                url,
-                instance,
-                type,
-                code: error?.code ?? '',
-                message: error?.message ?? String(error),
-                responseStatus: error?.response?.status ?? null,
-            })
-
             return null
         }
     }
@@ -150,6 +132,8 @@ const webhook = async (instance, type, data) => {
 const createSession = async (sessionId, res = null, options = { usePairingCode: false, phoneNumber: '' }) => {
     const logger = pino({ level: 'silent' })
     const { store, state, saveCreds } = await createSessionPersistence(sessionId, sessionsDir)
+    let rejectingSession = false
+    blockedWebhookSessions.delete(sessionId)
 
     // Fetch latest version of WA Web
     const { version, isLatest } = await fetchLatestBaileysVersion()
@@ -334,14 +318,53 @@ const createSession = async (sessionId, res = null, options = { usePairingCode: 
     })
 
     wa.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update
+        const { connection, lastDisconnect, qr, isNewLogin } = update
         const statusCode = lastDisconnect?.error?.output?.statusCode
 
-        callWebhook(sessionId, 'CONNECTION_UPDATE', update)
+        if (isNewLogin || connection === 'open') {
+            const phoneMismatch = getSessionPhoneMismatch(sessionId, options, wa)
+
+            if (phoneMismatch) {
+                rejectingSession = true
+                console.warn(`[AUTH] Session ${sessionId} rejected: expected ${phoneMismatch.expected}, got ${phoneMismatch.actual}`)
+                await callWebhook(sessionId, 'CONNECTION_UPDATE', {
+                    connection: 'close',
+                    status: 'rejected',
+                    reason: 'phone_mismatch',
+                    message: 'The authenticated WhatsApp number does not match this session id.',
+                    ...phoneMismatch,
+                })
+
+                blockedWebhookSessions.add(sessionId)
+
+                if (res && !res.headersSent) {
+                    response(res, 403, false, 'The authenticated WhatsApp number does not match this session id.', phoneMismatch)
+                }
+
+                try {
+                    await wa.logout()
+                } catch {
+                } finally {
+                    await deleteSession(sessionId)
+                }
+
+                return
+            }
+        }
 
         if (connection === 'open') {
             retries.delete(sessionId)
         }
+
+        if (rejectingSession) {
+            return await deleteSession(sessionId)
+        }
+
+        if (isNewLogin) {
+            return
+        }
+
+        callWebhook(sessionId, 'CONNECTION_UPDATE', update)
 
         if (connection === 'close') {
             if (statusCode === DisconnectReason.loggedOut || !shouldReconnect(sessionId)) {

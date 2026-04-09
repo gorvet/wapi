@@ -9,7 +9,17 @@ const hasRecoverableCreds = (storedValue) => {
 
   try {
     const creds = JSON.parse(raw);
-    return creds && typeof creds === 'object' && creds.registered === true;
+    if (!creds || typeof creds !== 'object') {
+      return false;
+    }
+
+    // Some Baileys states keep `registered=false` even when the auth is valid.
+    // Recover if any strong authentication signal exists.
+    const hasRegisteredFlag = creds.registered === true;
+    const hasMeId = typeof creds?.me?.id === 'string' && creds.me.id.trim() !== '';
+    const hasAccountData = Boolean(creds?.account);
+
+    return hasRegisteredFlag || hasMeId || hasAccountData;
   } catch {
     return false;
   }
